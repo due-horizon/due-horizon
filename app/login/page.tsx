@@ -1,33 +1,47 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
 export default function LoginPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const supabase = createClient();
 
-  const nextParam = searchParams.get("next");
-  const planParam = searchParams.get("plan");
-  const typeParam = searchParams.get("type");
-  const workspaceParam = searchParams.get("workspace");
-  const inviteParam = searchParams.get("invite");
+  const [nextParam, setNextParam] = useState<string | null>(null);
+  const [planParam, setPlanParam] = useState<string | null>(null);
+  const [typeParam, setTypeParam] = useState<string | null>(null);
+  const [workspaceParam, setWorkspaceParam] = useState<string | null>(null);
+  const [inviteParam, setInviteParam] = useState<string | null>(null);
 
-  const signUpParams = new URLSearchParams();
-  if (nextParam) signUpParams.set("next", nextParam);
-  if (planParam) signUpParams.set("plan", planParam);
-  if (typeParam) signUpParams.set("type", typeParam);
-  if (workspaceParam) signUpParams.set("workspace", workspaceParam);
-  if (inviteParam) signUpParams.set("invite", inviteParam);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
 
-  const signUpHref = signUpParams.toString()
-    ? `/signup?${signUpParams.toString()}`
-    : "/signup";
+    const params = new URLSearchParams(window.location.search);
+    setNextParam(params.get("next"));
+    setPlanParam(params.get("plan"));
+    setTypeParam(params.get("type"));
+    setWorkspaceParam(params.get("workspace"));
+    setInviteParam(params.get("invite"));
+  }, []);
+
+  const signUpHref = useMemo(() => {
+    const signUpParams = new URLSearchParams();
+    if (nextParam) signUpParams.set("next", nextParam);
+    if (planParam) signUpParams.set("plan", planParam);
+    if (typeParam) signUpParams.set("type", typeParam);
+    if (workspaceParam) signUpParams.set("workspace", workspaceParam);
+    if (inviteParam) signUpParams.set("invite", inviteParam);
+
+    return signUpParams.toString()
+      ? `/signup?${signUpParams.toString()}`
+      : "/signup";
+  }, [nextParam, planParam, typeParam, workspaceParam, inviteParam]);
 
   const oauthRedirectUrl = useMemo(() => {
+    if (typeof window === "undefined") return "";
+
     const callbackUrl = new URL("/auth/callback", window.location.origin);
     callbackUrl.searchParams.set(
       "next",
