@@ -9,7 +9,6 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
-import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import AddFilingModal from "./AddFilingModal";
 import {
@@ -603,7 +602,6 @@ export default function FilingsPage() {
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
   const listRef = useRef<HTMLDivElement | null>(null);
-  const searchParams = useSearchParams();
 
   function showToast(tone: ToastTone, title: string, body?: string) {
     const id = Date.now() + Math.floor(Math.random() * 1000);
@@ -870,22 +868,22 @@ export default function FilingsPage() {
     }
   }, [filteredFilings, focusedRowId, activeFilingId]);
 
-  const urlStatus = useMemo(() => {
-    const statusFromUrl = searchParams.get("status");
-    const allowedStatuses = ["ALL", "OVERDUE", "DUE SOON", "READY TO FILE", "UPCOMING", "FILED"] as const;
-    if (statusFromUrl && allowedStatuses.includes(statusFromUrl as (typeof allowedStatuses)[number])) {
-      return statusFromUrl as "ALL" | FilingStatus;
-    }
-    return null;
-  }, [searchParams]);
 
   useEffect(() => {
-    if (!urlStatus) return;
-    setStatusFilter(urlStatus);
-    setSearch("");
-    setCompanyFilter("ALL");
-    setAssigneeFilter("ALL");
-  }, [urlStatus]);
+    if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
+    const statusFromUrl = params.get("status");
+    const allowedStatuses = ["ALL", "OVERDUE", "DUE SOON", "READY TO FILE", "UPCOMING", "FILED"] as const;
+
+    if (statusFromUrl && allowedStatuses.includes(statusFromUrl as (typeof allowedStatuses)[number])) {
+      const nextStatus = statusFromUrl as "ALL" | FilingStatus;
+      setStatusFilter(nextStatus);
+      setSearch("");
+      setCompanyFilter("ALL");
+      setAssigneeFilter("ALL");
+    }
+  }, []);
 
 
 
