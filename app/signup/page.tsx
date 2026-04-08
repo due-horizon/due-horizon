@@ -106,11 +106,33 @@ export default function SignupPage() {
     setAccountType(initialType);
   }, [initialType]);
 
-  useEffect(() => {
-    if (!selectedPlan && !inviteToken) {
-      router.replace("/home#pricing");
-    }
-  }, [selectedPlan, inviteToken, router]);
+  const [paramsLoaded, setParamsLoaded] = useState(false);
+
+useEffect(() => {
+  if (typeof window === "undefined") return;
+
+  const params = new URLSearchParams(window.location.search);
+  const plan = normalizePlan(params.get("plan"));
+  const inferredType =
+    normalizeType(params.get("type")) || inferTypeFromPlan(plan);
+  const invite = params.get("invite");
+  const workspace = params.get("workspace")?.trim() || "";
+
+  setSelectedPlan(plan);
+  setInitialType(inferredType);
+  setInviteToken(invite);
+  if (workspace) setWorkspaceName(workspace);
+
+  setParamsLoaded(true); // 👈 THIS IS THE KEY
+}, []);
+
+useEffect(() => {
+  if (!paramsLoaded) return; // 👈 WAIT
+
+  if (!selectedPlan && !inviteToken) {
+    router.replace("/home#pricing");
+  }
+}, [paramsLoaded, selectedPlan, inviteToken, router]);
 
   const requiresWorkspaceName = !inviteToken;
   const canSubmit =
