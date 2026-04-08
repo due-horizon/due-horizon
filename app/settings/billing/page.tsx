@@ -1,8 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import { Field, Panel, SaveBar, SettingsShell } from "../_shared";
 
 export default function BillingSettingsPage() {
+  const [currentPlan, setCurrentPlan] = useState("Growth");
+  const [billingCycle, setBillingCycle] = useState("Monthly");
+  const [billingContact, setBillingContact] = useState("billing@example.com");
+  const [cardEnding, setCardEnding] = useState("4242");
+
   return (
     <SettingsShell
       title="Billing settings"
@@ -14,10 +20,15 @@ export default function BillingSettingsPage() {
           description="Use this section for current plan details, upgrade paths, and future billing controls."
         >
           <div className="grid gap-4 md:grid-cols-2">
-            <Field label="Current plan" defaultValue="Growth" />
-            <Field label="Billing cycle" defaultValue="Monthly" />
-            <Field label="Billing contact" type="email" defaultValue="billing@example.com" />
-            <Field label="Card ending in" defaultValue="4242" />
+            <Field label="Current plan" value={currentPlan} onChange={setCurrentPlan} />
+            <Field label="Billing cycle" value={billingCycle} onChange={setBillingCycle} />
+            <Field
+              label="Billing contact"
+              type="email"
+              value={billingContact}
+              onChange={setBillingContact}
+            />
+            <Field label="Card ending in" value={cardEnding} onChange={setCardEnding} />
           </div>
           <SaveBar primary="Save Billing Settings" />
         </Panel>
