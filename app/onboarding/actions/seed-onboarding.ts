@@ -398,6 +398,10 @@ export async function seedWorkspaceFromOnboarding(
     throwSupabaseError("Auth user update", authUpdateError);
   }
 
+if (!firmId) {
+  throw new Error("Missing firmId");
+}
+
   return {
     workspaceId: firmId,
     firmId,
