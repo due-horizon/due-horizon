@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import Papa from "papaparse";
 import { createClient } from "@/lib/supabase/client";
@@ -202,20 +202,22 @@ function hasSelectedTaxReturn(taxReturns: ClientTaxReturnMap) {
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const supabase = createClient();
 
-  const signupType = useMemo(
-    () =>
-      mapSignupTypeToOnboarding(searchParams.get("type")) ||
-      mapPlanToOnboarding(searchParams.get("plan")),
-    [searchParams]
-  );
+  const [signupType, setSignupType] = useState<AccountType>(null);
+  const [signupWorkspaceName, setSignupWorkspaceName] = useState("");
 
-  const signupWorkspaceName = useMemo(
-    () => searchParams.get("workspace")?.trim() || "",
-    [searchParams]
-  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
+    const resolvedSignupType =
+      mapSignupTypeToOnboarding(params.get("type")) ||
+      mapPlanToOnboarding(params.get("plan"));
+
+    setSignupType(resolvedSignupType);
+    setSignupWorkspaceName(params.get("workspace")?.trim() || "");
+  }, []);
 
   const [step, setStep] = useState<Step>(() => getLockedInitialStep(signupType));
   const [accountType, setAccountType] = useState<AccountType>(signupType);
