@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
 type Plan = "starter" | "growth" | "scale" | "core" | "operations" | "enterprise" | null;
@@ -58,17 +58,12 @@ function getWorkspacePlaceholder(type: AccountType) {
 export default function SignupPage() {
   const supabase = createClient();
   const router = useRouter();
-  const searchParams = useSearchParams();
 
-  const selectedPlan = useMemo(() => normalizePlan(searchParams.get("plan")), [searchParams]);
-  const initialType = useMemo(
-    () => normalizeType(searchParams.get("type")) || inferTypeFromPlan(normalizePlan(searchParams.get("plan"))),
-    [searchParams]
-  );
-  const inviteToken = useMemo(() => searchParams.get("invite"), [searchParams]);
-
+  const [selectedPlan, setSelectedPlan] = useState<Plan>(null);
+  const [initialType, setInitialType] = useState<AccountType>(null);
+  const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState("");
-  const [accountType, setAccountType] = useState<AccountType>(initialType);
+  const [accountType, setAccountType] = useState<AccountType>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -91,6 +86,21 @@ export default function SignupPage() {
   const [success, setSuccess] = useState<string | null>(null);
   const [submittedEmail, setSubmittedEmail] = useState<string | null>(null);
   const [accountCreated, setAccountCreated] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
+    const plan = normalizePlan(params.get("plan"));
+    const inferredType = normalizeType(params.get("type")) || inferTypeFromPlan(plan);
+    const invite = params.get("invite");
+    const workspace = params.get("workspace")?.trim() || "";
+
+    setSelectedPlan(plan);
+    setInitialType(inferredType);
+    setInviteToken(invite);
+    if (workspace) setWorkspaceName(workspace);
+  }, []);
 
   useEffect(() => {
     setAccountType(initialType);
