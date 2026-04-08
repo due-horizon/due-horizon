@@ -1,8 +1,13 @@
 "use client";
 
+import { useState } from "react";
 import { Field, Panel, SaveBar, SettingsShell, ToggleRow } from "../_shared";
 
 export default function SecuritySettingsPage() {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+
   return (
     <SettingsShell
       title="Security settings"
@@ -14,9 +19,27 @@ export default function SecuritySettingsPage() {
           description="Keep your account secure with stronger sign-in and authentication controls."
         >
           <div className="grid gap-4">
-            <Field label="Current password" type="password" placeholder="••••••••" />
-            <Field label="New password" type="password" placeholder="••••••••" />
-            <Field label="Confirm new password" type="password" placeholder="••••••••" />
+            <Field
+              label="Current password"
+              type="password"
+              placeholder="••••••••"
+              value={currentPassword}
+              onChange={setCurrentPassword}
+            />
+            <Field
+              label="New password"
+              type="password"
+              placeholder="••••••••"
+              value={newPassword}
+              onChange={setNewPassword}
+            />
+            <Field
+              label="Confirm new password"
+              type="password"
+              placeholder="••••••••"
+              value={confirmNewPassword}
+              onChange={setConfirmNewPassword}
+            />
           </div>
           <SaveBar primary="Update Password" />
         </Panel>
