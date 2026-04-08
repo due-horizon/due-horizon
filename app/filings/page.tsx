@@ -1394,13 +1394,13 @@ showToast(
           suggestion.frequency
         );
 
-        const nextForm = {
+        const nextForm: NewFilingForm = {
           ...newFiling,
           title: normalizedSuggestionName,
           type: normalizedSuggestionName,
           state: suggestion.jurisdictionCode,
           dueDate: suggestion.dueDate,
-          templateKey: matchedTemplateKey,
+          templateKey: matchedTemplateKey as FilingTemplateKey | "",
         };
         setNewFiling(nextForm);
         if (submitAttempted) setErrors(validateForm(nextForm));
