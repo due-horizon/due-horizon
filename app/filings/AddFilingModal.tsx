@@ -8,6 +8,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
+import type { SuggestedFiling } from "@/lib/compliance-engine";
 
 type FilingTemplateKey =
   | "Sales Tax Filing"
@@ -44,14 +45,6 @@ type CompanyOption = {
   kind: "client" | "organization";
 };
 
-type SuggestedFiling = {
-  filingKey: string;
-  filingName: string;
-  jurisdictionCode: string;
-  dueDate: string;
-  frequency: string;
-  tasks: string[];
-};
 
 type FilingTemplateMap = Record<
   FilingTemplateKey,
