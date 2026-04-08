@@ -175,8 +175,8 @@ export default function DashboardPage() {
 
   const [filings, setFilings] = useState<Filing[]>([]);
   const [workspaceSummary, setWorkspaceSummary] = useState<WorkspaceSummary>({
-    firmName: "",
-    firmType: "unknown",
+    workspaceName: "",
+    workspaceType: "unknown",
     plan: "starter",
     entityCount: 0,
   });
