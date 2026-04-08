@@ -1885,8 +1885,11 @@ showToast(
                                   <input
                                     type="checkbox"
                                     checked={isSelected}
-                                    onClick={(event) => event.stopPropagation()}
-                                    onChange={(event) => toggleRow(row.id, { shiftKey: event.shiftKey })}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      toggleRow(row.id, { shiftKey: event.shiftKey });
+                                    }}
+                                    readOnly
                                     className="h-4 w-4 rounded border-white/20 bg-transparent text-cyan-400 focus:ring-cyan-400"
                                   />
                                 </div>
