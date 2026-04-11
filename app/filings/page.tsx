@@ -11,13 +11,17 @@ import {
 } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddFilingModal from "./AddFilingModal";
-import {
-  buildSuggestedFilings,
-  type ComplianceProfile,
-  type ComplianceRule,
-  type WorkflowTemplate,
-  type SuggestedFiling,
+import { buildSuggestedFilings } from "@/lib/compliance-engine";
+
+import type {
+  SuggestedFiling,
 } from "@/lib/compliance-engine";
+
+import type {
+  ComplianceProfile,
+  ComplianceRule,
+  WorkflowTemplate,
+} from "@/lib/compliance-rules";
 
 type FilingStatus = "OVERDUE" | "DUE SOON" | "READY TO FILE" | "UPCOMING" | "FILED";
 type FilingTemplateKey =

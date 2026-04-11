@@ -6,12 +6,20 @@ import { motion, AnimatePresence } from "framer-motion";
 import Papa from "papaparse";
 import { createClient } from "@/lib/supabase/client";
 import { seedWorkspaceFromOnboarding } from "./actions/seed-onboarding";
+import { buildSuggestedFilings } from "@/lib/compliance-engine";
+
+import type { SuggestedFiling } from "@/lib/compliance-engine";
+
 import {
-  buildSuggestedFilings,
-  type ComplianceRule,
-  type WorkflowTemplate,
-} from "@/lib/compliance-engine";
-import { type ComplianceProfile } from "@/lib/compliance-rules";
+  complianceRules,
+  workflowTemplates,
+} from "@/lib/compliance-rules";
+
+import type {
+  ComplianceProfile,
+  ComplianceRule,
+  WorkflowTemplate,
+} from "@/lib/compliance-rules";
 
 type AccountType = "business_owner" | "accounting_firm" | null;
 type IntakeMethod = "manual" | "csv" | "later" | null;

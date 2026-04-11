@@ -298,11 +298,11 @@ export default function ProfileSettingsPage() {
             ) : null}
 
             <SaveBar
-              primary={isDirty ? "Save Profile" : "No Changes"}
-              onPrimaryClick={saveProfile}
-              saving={saving}
-              primaryDisabled={saving || !isDirty}
-            />
+  primary="Save Profile"
+  onPrimaryClick={saveProfile}
+  saving={saving}
+  disabled={saving || !isDirty}
+/>
           </>
         )}
       </Panel>

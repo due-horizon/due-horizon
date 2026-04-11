@@ -1,11 +1,14 @@
 import {
   complianceRules as defaultComplianceRules,
   workflowTemplates as defaultWorkflowTemplates,
-  type ComplianceProfile,
-  type ComplianceRule,
-  type DueRuleConfig,
-  type FilingFrequency,
-  type WorkflowTemplate,
+} from "./compliance-rules";
+
+import type {
+  ComplianceProfile,
+  ComplianceRule,
+  DueRuleConfig,
+  FilingFrequency,
+  WorkflowTemplate,
 } from "./compliance-rules";
 
 export type SuggestedFiling = {
