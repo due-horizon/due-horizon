@@ -6,6 +6,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import Papa from "papaparse";
 import { createClient } from "@/lib/supabase/client";
 import { seedWorkspaceFromOnboarding } from "./actions/seed-onboarding";
+import {
+  buildSuggestedFilings,
+  type ComplianceRule,
+  type WorkflowTemplate,
+} from "@/lib/compliance-engine";
+import { type ComplianceProfile } from "@/lib/compliance-rules";
 
 type AccountType = "business_owner" | "accounting_firm" | null;
 type IntakeMethod = "manual" | "csv" | "later" | null;
@@ -37,6 +43,16 @@ type CsvImportedRow = {
   services: ClientServiceMap;
   taxReturns: ClientTaxReturnMap;
   salesTaxFrequency: FilingFrequency;
+};
+
+type WorkspacePreviewSummary = {
+  clients: number;
+  workflows: number;
+  filings: {
+    filingName: string;
+    dueDate: string;
+    jurisdictionCode: string;
+  }[];
 };
 
 const US_STATES = [
@@ -200,6 +216,24 @@ function hasSelectedTaxReturn(taxReturns: ClientTaxReturnMap) {
   return Object.values(taxReturns).some(Boolean);
 }
 
+function toComplianceProfile(form: SetupForm): ComplianceProfile {
+  return {
+    stateCode: form.state.trim().toUpperCase(),
+    entityType: form.entityType.trim() || null,
+    payrollEnabled: form.services.payroll,
+    salesTaxEnabled: form.services.sales_tax,
+    salesTaxFrequency: form.services.sales_tax ? form.salesTaxFrequency : null,
+    incomeTaxEnabled: hasSelectedTaxReturn(form.taxReturns),
+    annualReportEnabled: form.services.annual_report,
+    boiEnabled: false,
+    w21099Enabled: form.services.w2_1099,
+    tax1040Enabled: form.taxReturns.f1040,
+    tax1120Enabled: form.taxReturns.f1120,
+    tax1120SEnabled: form.taxReturns.f1120s,
+    tax1065Enabled: form.taxReturns.f1065,
+  };
+}
+
 export default function OnboardingPage() {
   const router = useRouter();
   const supabase = createClient();
@@ -253,6 +287,9 @@ export default function OnboardingPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [showFinalCta, setShowFinalCta] = useState(false);
   const [lockedAccountType, setLockedAccountType] = useState(Boolean(signupType));
+  const [previewRules, setPreviewRules] = useState<ComplianceRule[]>([]);
+  const [previewTemplates, setPreviewTemplates] = useState<WorkflowTemplate[]>([]);
+  const [previewConfigLoaded, setPreviewConfigLoaded] = useState(false);
 
   const parsedClientCount = Math.max(0, Number.parseInt(clientCount || "0", 10) || 0);
 
@@ -370,6 +407,49 @@ export default function OnboardingPage() {
     return () => window.clearTimeout(timer);
   }, [step]);
 
+  useEffect(() => {
+    let ignore = false;
+
+    async function loadPreviewConfig() {
+      try {
+        const [{ data: rulesData, error: rulesError }, { data: templatesData, error: templatesError }] =
+          await Promise.all([
+            supabase.from("compliance_rules").select("*").eq("active", true),
+            supabase.from("workflow_templates").select("*").eq("active", true),
+          ]);
+
+        if (ignore) return;
+
+        if (rulesError) {
+          console.error("Preview compliance rule lookup failed:", rulesError);
+        }
+
+        if (templatesError) {
+          console.error("Preview workflow template lookup failed:", templatesError);
+        }
+
+        setPreviewRules(((rulesData || []) as ComplianceRule[]).filter(Boolean));
+        setPreviewTemplates(((templatesData || []) as WorkflowTemplate[]).filter(Boolean));
+      } catch (error) {
+        if (!ignore) {
+          console.error("Preview configuration load failed:", error);
+          setPreviewRules([]);
+          setPreviewTemplates([]);
+        }
+      } finally {
+        if (!ignore) {
+          setPreviewConfigLoaded(true);
+        }
+      }
+    }
+
+    loadPreviewConfig();
+
+    return () => {
+      ignore = true;
+    };
+  }, [supabase]);
+
   const totalSteps =
     accountType === "accounting_firm" ? (lockedAccountType ? 4 : 5) : 2;
   const currentStepDisplay = getCurrentStepDisplay(step, accountType, lockedAccountType);
@@ -401,7 +481,11 @@ export default function OnboardingPage() {
   const includedCsvRows = csvRows.filter((row) => row.include);
   const hasValidCsvImport = includedCsvRows.length > 0;
 
-  const workspacePreview = useMemo(() => {
+  const workspacePreview = useMemo<WorkspacePreviewSummary>(() => {
+    if (!previewRules.length || !previewTemplates.length) {
+      return { clients: 0, workflows: 0, filings: [] };
+    }
+
     if (accountType === "accounting_firm") {
       const count =
         intakeMethod === "manual"
@@ -410,36 +494,66 @@ export default function OnboardingPage() {
             ? includedCsvRows.length
             : 0;
 
+      const filings =
+        intakeMethod === "manual"
+          ? buildSuggestedFilings({
+              profile: toComplianceProfile(manualClient),
+              rules: previewRules,
+              templates: previewTemplates,
+            })
+          : includedCsvRows.flatMap((row) =>
+              buildSuggestedFilings({
+                profile: toComplianceProfile({
+                  name: row.client_name,
+                  state: row.state,
+                  entityType: row.entity_type,
+                  services: row.services,
+                  taxReturns: row.taxReturns,
+                  salesTaxFrequency: row.salesTaxFrequency,
+                }),
+                rules: previewRules,
+                templates: previewTemplates,
+              })
+            );
+
       return {
         clients: count,
-        workflows: estimateWorkflowCount(
-          intakeMethod === "manual"
-            ? [{ services: manualClient.services, taxReturns: manualClient.taxReturns }]
-            : includedCsvRows.map((row) => ({
-                services: row.services,
-                taxReturns: row.taxReturns,
-              }))
-        ),
+        workflows: filings.length,
+        filings: filings.slice(0, 5).map((filing) => ({
+          filingName: filing.filingName,
+          dueDate: filing.dueDate,
+          jurisdictionCode: filing.jurisdictionCode,
+        })),
       };
     }
 
     if (accountType === "business_owner") {
+      const filings = buildSuggestedFilings({
+        profile: toComplianceProfile(businessSetup),
+        rules: previewRules,
+        templates: previewTemplates,
+      });
+
       return {
         clients: businessSetup.name.trim() ? 1 : 0,
-        workflows: estimateWorkflowCount([
-          { services: businessSetup.services, taxReturns: businessSetup.taxReturns },
-        ]),
+        workflows: filings.length,
+        filings: filings.slice(0, 5).map((filing) => ({
+          filingName: filing.filingName,
+          dueDate: filing.dueDate,
+          jurisdictionCode: filing.jurisdictionCode,
+        })),
       };
     }
 
-    return { clients: 0, workflows: 0 };
+    return { clients: 0, workflows: 0, filings: [] };
   }, [
     accountType,
     intakeMethod,
     includedCsvRows,
-    manualClient.services,
-    businessSetup.services,
-    businessSetup.name,
+    manualClient,
+    businessSetup,
+    previewRules,
+    previewTemplates,
   ]);
 
   function goForwardFromStep1() {
@@ -479,7 +593,12 @@ export default function OnboardingPage() {
           accountType === "business_owner"
             ? businessSetup.name.trim() || firmName
             : firmName,
-        clientCount: accountType === "business_owner" ? 1 : parsedClientCount,
+        clientCount:
+          accountType === "business_owner"
+            ? 1
+            : intakeMethod === "later"
+              ? parsedClientCount
+              : 0,
         intakeMethod,
       });
 
@@ -522,6 +641,12 @@ export default function OnboardingPage() {
       }
     );
 
+    const suggestedFilings = buildSuggestedFilings({
+      profile: toComplianceProfile(form),
+      rules: complianceRules,
+      templates: workflowTemplates,
+    });
+
     console.log("upsert_client_compliance_profile result:", {
       firmId: resolvedFirmId,
       clientId,
@@ -534,6 +659,7 @@ export default function OnboardingPage() {
         taxReturns: form.taxReturns,
         salesTaxFrequency: form.services.sales_tax ? form.salesTaxFrequency : null,
       },
+      engineSuggestedFilings: suggestedFilings,
     });
 
     if (profileError || !profileId) {
@@ -573,24 +699,53 @@ export default function OnboardingPage() {
     form: SetupForm,
     source: "manual" | "import" = "manual"
   ) {
-    const { data: client, error } = await supabase
+    const normalizedName = form.name.trim().replace(/\s+/g, " ");
+    const normalizedState = form.state.trim().toUpperCase();
+
+    const { data: existingClients, error: existingError } = await supabase
       .from("clients")
-      .insert({
-        firm_id: resolvedFirmId,
-        client_name: form.name.trim(),
-        state_code: form.state.trim().toUpperCase(),
-        entity_type: form.entityType.trim(),
-        source,
-        status: "active",
-      })
-      .select("id")
-      .single();
+      .select("id, client_name")
+      .eq("firm_id", resolvedFirmId);
 
-    if (error || !client) throw error || new Error("Failed to create client.");
+    if (existingError) throw existingError;
 
-    await upsertComplianceProfileAndGenerateFilings(resolvedFirmId, client.id, form);
+    const existingClient = (existingClients || []).find(
+      (client) =>
+        String(client.client_name || "")
+          .trim()
+          .replace(/\s+/g, " ")
+          .toLowerCase() === normalizedName.toLowerCase()
+    );
 
-    return client.id;
+    let clientId: string;
+
+    if (existingClient?.id) {
+      clientId = existingClient.id;
+    } else {
+      const { data: client, error } = await supabase
+        .from("clients")
+        .insert({
+          firm_id: resolvedFirmId,
+          client_name: normalizedName,
+          state_code: normalizedState,
+          entity_type: form.entityType.trim(),
+          source,
+          status: "active",
+        })
+        .select("id")
+        .single();
+
+      if (error || !client) throw error || new Error("Failed to create client.");
+      clientId = client.id;
+    }
+
+    await upsertComplianceProfileAndGenerateFilings(resolvedFirmId, clientId, {
+      ...form,
+      name: normalizedName,
+      state: normalizedState,
+    });
+
+    return clientId;
   }
 
   async function finalizeBusinessOwnerManual() {
@@ -679,34 +834,19 @@ export default function OnboardingPage() {
   async function finalizeCsvImport() {
     const resolvedFirmId = await ensureFirm();
 
-    const rowsToInsert = includedCsvRows.map((row) => ({
-      firm_id: resolvedFirmId,
-      client_name: row.client_name.trim(),
-      state_code: row.state.trim().toUpperCase(),
-      entity_type: row.entity_type.trim() || "Client",
-      source: "import",
-      status: "active",
-    }));
-
-    const { data: clients, error } = await supabase
-      .from("clients")
-      .insert(rowsToInsert)
-      .select("id, state_code");
-
-    if (error || !clients) throw error || new Error("Failed to import clients.");
-
-    for (let i = 0; i < clients.length; i += 1) {
-      const client = clients[i];
-      const row = includedCsvRows[i];
-
-      await upsertComplianceProfileAndGenerateFilings(resolvedFirmId, client.id, {
-        name: row.client_name,
-        state: client.state_code || row.state,
-        entityType: row.entity_type,
-        services: row.services,
-        taxReturns: row.taxReturns,
-        salesTaxFrequency: row.salesTaxFrequency,
-      });
+    for (const row of includedCsvRows) {
+      await createClientRecord(
+        resolvedFirmId,
+        {
+          name: row.client_name,
+          state: row.state,
+          entityType: row.entity_type,
+          services: row.services,
+          taxReturns: row.taxReturns,
+          salesTaxFrequency: row.salesTaxFrequency,
+        },
+        "import"
+      );
     }
 
     setStep(5);
@@ -909,6 +1049,11 @@ export default function OnboardingPage() {
           <p className="mt-3 text-sm text-slate-500">
             A fast setup flow built to get you into a real, working workspace.
           </p>
+          {!previewConfigLoaded && (
+            <p className="mt-2 text-xs text-slate-500">
+              Syncing live compliance rules and workflow templates...
+            </p>
+          )}
         </div>
 
         <div className="grid gap-8 lg:grid-cols-[1.2fr,0.8fr]">
@@ -1103,7 +1248,7 @@ export default function OnboardingPage() {
                         <div>
                           <div className="text-sm font-semibold text-white">Import client list</div>
                           <p className="mt-1 text-sm text-slate-400">
-                            Paste CSV data or upload a file. Only checked rows will be imported.
+                            Paste CSV data or upload a file. Only checked rows will be imported, and nothing is final until you continue.
                           </p>
                         </div>
 
@@ -1297,13 +1442,13 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
 
                     <h2 className="text-center text-2xl font-semibold">Building your workspace</h2>
                     <p className="mt-3 text-center text-slate-400">
-                      Creating the workspace, client records, and only the workflows you actually selected.
+                      We’re building your compliance system now — creating the workspace, saving your selections, and generating only the filings and workflows you actually need.
                     </p>
 
                     <div className="mt-8 space-y-4">
                       <LoadingRow label="Creating workspace" delay={0} />
-                      <LoadingRow label="Saving clients and service selections" delay={0.2} />
-                      <LoadingRow label="Generating only the needed workflows" delay={0.35} />
+                      <LoadingRow label="Saving compliance setup" delay={0.2} />
+                      <LoadingRow label="Generating filings and workflows" delay={0.35} />
                     </div>
                   </div>
                 )}
@@ -1318,7 +1463,7 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                             : `Your ${businessSetup.name || "business"} workspace is ready`}
                         </h2>
                         <p className="mt-2 text-slate-400">
-                          We created the workspace without blindly activating services for every client.
+                          Your deadlines, workflows, and reminders are now set up based on the services and filings you actually selected.
                         </p>
                       </div>
 
@@ -1333,27 +1478,48 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                           note="Only the records you chose were added."
                         />
                         <PreviewStatCard
-                          title="Starter workflows"
+                          title="Filings + workflows"
                           value={String(workspacePreview.workflows)}
-                          note="Generated only for the selected services."
+                          note="Generated only for the selected services and filing tracks."
                         />
                       </div>
+
+                      {workspacePreview.filings.length > 0 && (
+                        <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                          <div className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                            Included in this setup
+                          </div>
+                          <div className="mt-3 grid gap-3 md:grid-cols-2">
+                            {workspacePreview.filings.slice(0, 4).map((filing) => (
+                              <div
+                                key={`${filing.filingName}-${filing.dueDate}-final`}
+                                className="rounded-xl border border-white/10 bg-[#0b1220] px-3 py-3"
+                              >
+                                <div className="text-sm font-medium text-white">{filing.filingName}</div>
+                                <div className="mt-1 text-xs text-slate-400">
+                                  {filing.jurisdictionCode} • due {new Date(`${filing.dueDate}T00:00:00`).toLocaleDateString()}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-6">
-                      <div className="mb-4 text-sm font-semibold text-slate-300">What’s ready now</div>
+                      <div className="mb-4 text-sm font-semibold text-slate-300">What happens next</div>
                       <div className="grid gap-4 md:grid-cols-3">
                         <PreviewCard
                           title="Guided setup is complete"
-                          subtitle="Your workspace is set up so you can move straight into real compliance work."
+                          subtitle="Open the dashboard to see your highest-priority deadlines and next actions immediately."
                         />
                         <PreviewCard
                           title="Imports are ready"
-                          subtitle="Client imports can be reviewed before you bring them into the workspace."
+                          subtitle="Use the filings page to manage the full queue, review workflows, and add anything else manually."
                         />
                         <PreviewCard
                           title="Clear handoff"
-                          subtitle="You can see what was created before you enter the dashboard."
+                          subtitle="Your setup is based on live compliance rules and templates, so what you see should match the real system."
                         />
                       </div>
 
@@ -1411,6 +1577,35 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                 title="Built for real work"
                 body="Your workspace starts with real clients or business details, not placeholders."
               />
+
+              <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/5 p-4">
+                <div className="text-xs uppercase tracking-[0.16em] text-cyan-300/80">Preview</div>
+                <div className="mt-2 text-sm font-semibold text-white">
+                  {workspacePreview.workflows > 0
+                    ? `${workspacePreview.workflows} filing${workspacePreview.workflows === 1 ? "" : "s"} will be generated`
+                    : previewConfigLoaded
+                      ? "Choose services to preview filings"
+                      : "Loading live filing preview"}
+                </div>
+                <div className="mt-3 space-y-2">
+                  {workspacePreview.filings.slice(0, 4).map((filing) => (
+                    <div
+                      key={`${filing.filingName}-${filing.dueDate}`}
+                      className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2"
+                    >
+                      <div className="text-sm text-white">{filing.filingName}</div>
+                      <div className="mt-1 text-xs text-slate-400">
+                        {filing.jurisdictionCode} • due {new Date(`${filing.dueDate}T00:00:00`).toLocaleDateString()}
+                      </div>
+                    </div>
+                  ))}
+                  {previewConfigLoaded && workspacePreview.filings.length === 0 && (
+                    <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.03] px-3 py-3 text-sm text-slate-400">
+                      No filing preview yet. Select an intake path and turn on at least one service or tax return.
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </aside>
         </div>
@@ -1606,18 +1801,6 @@ function getSubheading(step: Step, accountType: AccountType, intakeMethod: Intak
     return "Your first dashboard now has real clients and real filings instead of placeholders.";
   }
   return "";
-}
-
-function estimateWorkflowCount(
-  selections: Array<{ services: ClientServiceMap; taxReturns: ClientTaxReturnMap }>
-) {
-  return selections.reduce(
-    (total, selection) =>
-      total +
-      Object.values(selection.services).filter(Boolean).length +
-      Object.values(selection.taxReturns).filter(Boolean).length,
-    0
-  );
 }
 
 function SetupPanel({

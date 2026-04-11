@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import {
+  ArrowLeft,
   Bell,
   Building2,
   ChevronRight,
@@ -123,7 +124,9 @@ function QuickStat({
     <div className="rounded-3xl border border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))] p-5 shadow-[0_18px_50px_rgba(0,0,0,0.14)]">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{label}</div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+            {label}
+          </div>
           <div className="mt-3 text-3xl font-semibold text-white">{value}</div>
           <div className="mt-2 text-sm text-slate-400">{helper}</div>
         </div>
@@ -162,6 +165,16 @@ export default function SettingsPage() {
         <div className="rounded-[30px] border border-cyan-400/10 bg-white/[0.03] p-3 shadow-[0_0_60px_rgba(34,211,238,0.07)] sm:p-4">
           <div className="overflow-hidden rounded-[24px] border border-white/10 bg-[linear-gradient(to_bottom,rgba(11,21,38,0.96),rgba(8,15,28,0.98))] shadow-[0_30px_80px_rgba(0,0,0,0.45)]">
             <div className="border-b border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.12),transparent_42%)] px-5 py-6 sm:px-6">
+              <div className="mb-5">
+                <Link
+                  href="/dashboard"
+                  className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:border-cyan-300/20 hover:bg-cyan-400/10 hover:text-white"
+                >
+                  <ArrowLeft size={16} />
+                  Back to Dashboard
+                </Link>
+              </div>
+
               <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
                 <div className="max-w-3xl">
                   <div className="text-xs font-semibold uppercase tracking-[0.22em] text-cyan-300/75">
@@ -171,7 +184,8 @@ export default function SettingsPage() {
                     Account & workspace settings
                   </h1>
                   <p className="mt-2 text-sm leading-7 text-slate-400">
-                    Manage your account, workspace preferences, team access, notifications, and security from one clean control center.
+                    Manage your account, workspace preferences, team access,
+                    notifications, and security from one clean control center.
                   </p>
                 </div>
 
@@ -183,10 +197,30 @@ export default function SettingsPage() {
 
             <div className="px-5 py-6 sm:px-6">
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <QuickStat label="Profile" value="Account" helper="Identity and login details" icon={<User2 size={18} />} />
-                <QuickStat label="Workspace" value="Admin" helper="Business and firm settings" icon={<Building2 size={18} />} />
-                <QuickStat label="Security" value="Protected" helper="Access and account safety" icon={<Lock size={18} />} />
-                <QuickStat label="Notifications" value="Live" helper="Alerts and reminder preferences" icon={<Mail size={18} />} />
+                <QuickStat
+                  label="Profile"
+                  value="Account"
+                  helper="Identity and login details"
+                  icon={<User2 size={18} />}
+                />
+                <QuickStat
+                  label="Workspace"
+                  value="Admin"
+                  helper="Business and firm settings"
+                  icon={<Building2 size={18} />}
+                />
+                <QuickStat
+                  label="Security"
+                  value="Protected"
+                  helper="Access and account safety"
+                  icon={<Lock size={18} />}
+                />
+                <QuickStat
+                  label="Notifications"
+                  value="Live"
+                  helper="Alerts and reminder preferences"
+                  icon={<Mail size={18} />}
+                />
               </div>
 
               <div className="mt-6 rounded-[28px] border border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.035),rgba(255,255,255,0.015))] p-5 shadow-[0_24px_70px_rgba(0,0,0,0.18)]">
@@ -199,13 +233,23 @@ export default function SettingsPage() {
                       Everything important in one place
                     </div>
                     <div className="mt-2 text-sm leading-7 text-slate-300">
-                      Each section below routes to its own dedicated settings page so the hub stays clean while the actual controls scale the right way.
+                      Each section below routes to its own dedicated settings page
+                      so the hub stays clean while the actual controls scale the
+                      right way.
                     </div>
                   </div>
 
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <MiniCard title="Security posture" value="Strong" icon={<KeyRound size={16} />} />
-                    <MiniCard title="Workspace controls" value="Ready" icon={<SlidersHorizontal size={16} />} />
+                    <MiniCard
+                      title="Security posture"
+                      value="Strong"
+                      icon={<KeyRound size={16} />}
+                    />
+                    <MiniCard
+                      title="Workspace controls"
+                      value="Ready"
+                      icon={<SlidersHorizontal size={16} />}
+                    />
                   </div>
                 </div>
               </div>
@@ -228,8 +272,12 @@ export default function SettingsPage() {
                               <Icon size={18} />
                             </div>
                             <div>
-                              <div className="text-lg font-semibold text-white">{section.title}</div>
-                              <div className="mt-1 text-sm text-slate-400">{section.description}</div>
+                              <div className="text-lg font-semibold text-white">
+                                {section.title}
+                              </div>
+                              <div className="mt-1 text-sm text-slate-400">
+                                {section.description}
+                              </div>
                             </div>
                           </div>
 

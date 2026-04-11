@@ -63,6 +63,12 @@ type WorkspaceSummary = {
   entityCount: number;
 };
 
+type MissingCoverageSummary = {
+  entitiesWithoutFilings: number;
+  entitiesWithFilings: number;
+  message: string;
+};
+
 function daysUntil(dateStr: string) {
   const today = new Date();
   const due = new Date(dateStr);
@@ -460,6 +466,26 @@ export default function DashboardPage() {
     },
   ];
 
+  const filingCoverageSummary: MissingCoverageSummary = useMemo(() => {
+    const coveredEntities = new Set(
+      filings
+        .map((filing) => filing.company)
+        .filter((company) => company && company !== "Workspace")
+    );
+
+    const entitiesWithFilings = coveredEntities.size;
+    const entitiesWithoutFilings = Math.max(workspaceSummary.entityCount - entitiesWithFilings, 0);
+
+    return {
+      entitiesWithoutFilings,
+      entitiesWithFilings,
+      message:
+        entitiesWithoutFilings > 0
+          ? `${entitiesWithoutFilings} ${entitiesWithoutFilings === 1 ? "entity appears" : "entities appear"} to be missing filing coverage.`
+          : "No obvious filing coverage gaps detected from the current filing list.",
+    };
+  }, [filings, workspaceSummary.entityCount]);
+
   const prioritizedActionItems = [
     ...filings.filter((f) => f.bucket === "OVERDUE").slice(0, 3),
     ...filings.filter((f) => f.bucket === "DUE SOON").slice(0, 3),
@@ -690,14 +716,15 @@ export default function DashboardPage() {
                           DASHBOARD
                         </div>
                         <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
-                          <span className="text-cyan-300">{attentionCount}</span>{" "}
-                          {attentionCount === 1 ? "filing" : "filings"} need your attention
+                          Focus here — <span className="text-cyan-300">{attentionCount}</span>{" "}
+                          {attentionCount === 1 ? "filing needs action" : "filings need action"}
                         </h1>
                         <p className="mt-2 text-slate-400">
-                          {workspaceSummary.entityCount}{" "}
-                          {workspaceSummary.workspaceType === "accounting_firm" ? "client" : "entity"}
-                          {workspaceSummary.entityCount === 1 ? "" : "ies"} in this workspace
+                          Start with the highest-risk item, then work down your queue.
                         </p>
+                        <div className="mt-2 text-sm text-slate-500">
+                          {overdueCount} at risk • {dueSoonCount} due next • {readyCount} ready to file
+                        </div>
                       </div>
                     </div>
 
@@ -858,14 +885,15 @@ export default function DashboardPage() {
 
                   <div className="mt-4 lg:hidden">
                     <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-                      <span className="text-cyan-300">{attentionCount}</span>{" "}
-                      {attentionCount === 1 ? "filing" : "filings"} need your attention
+                      Focus here — <span className="text-cyan-300">{attentionCount}</span>{" "}
+                      {attentionCount === 1 ? "filing needs action" : "filings need action"}
                     </h1>
                     <p className="mt-2 text-slate-400">
-                      {workspaceSummary.entityCount}{" "}
-                      {workspaceSummary.workspaceType === "accounting_firm" ? "client" : "entity"}
-                      {workspaceSummary.entityCount === 1 ? "" : "ies"} in this workspace
+                      Start with the highest-risk item, then work down your queue.
                     </p>
+                    <div className="mt-2 text-sm text-slate-500">
+                      {overdueCount} at risk • {dueSoonCount} due next • {readyCount} ready to file
+                    </div>
                   </div>
                 </div>
 
@@ -884,7 +912,7 @@ export default function DashboardPage() {
                     <div className="grid items-stretch gap-8 md:grid-cols-2 xl:grid-cols-4">
                       <Link href="/filings?status=OVERDUE" className="block xl:scale-[1.04]">
                         <StatCard
-                          label="OVERDUE"
+                          label="AT RISK"
                           value={String(overdueCount)}
                           sub="Require immediate action"
                           icon={<AlertTriangle size={19} />}
@@ -892,9 +920,9 @@ export default function DashboardPage() {
                         />
                       </Link>
 
-                      <Link href="/filings?status=DUE%20SOON" className="block">
+                      <Link href="/filings?status=DUE%20SOON" className="block transition-all duration-200 hover:shadow-[0_0_25px_rgba(34,211,238,0.12)]">
                         <StatCard
-                          label="DUE SOON"
+                          label="DUE NEXT"
                           value={String(dueSoonCount)}
                           sub="Within 7 days"
                           icon={<Calendar size={19} />}
@@ -902,9 +930,9 @@ export default function DashboardPage() {
                         />
                       </Link>
 
-                      <Link href="/filings?status=READY%20TO%20FILE" className="block">
+                      <Link href="/filings?status=READY%20TO%20FILE" className="block transition-all duration-200 hover:shadow-[0_0_25px_rgba(34,211,238,0.12)]">
                         <StatCard
-                          label="READY TO FILE"
+                          label="READY"
                           value={String(readyCount)}
                           sub="Prepared and awaiting submission"
                           icon={<CheckCircle2 size={19} />}
@@ -912,9 +940,9 @@ export default function DashboardPage() {
                         />
                       </Link>
 
-                      <Link href="/filings?status=UPCOMING" className="block">
+                      <Link href="/filings?status=UPCOMING" className="block transition-all duration-200 hover:shadow-[0_0_25px_rgba(34,211,238,0.12)]">
                         <StatCard
-                          label="UPCOMING"
+                          label="LATER"
                           value={String(upcomingCount)}
                           sub="Future deadlines to watch"
                           icon={<ArrowRight size={19} />}
@@ -923,6 +951,78 @@ export default function DashboardPage() {
                       </Link>
                     </div>
 
+                    {!loading && (
+                      <div className="mt-8 overflow-hidden rounded-[28px] border border-violet-400/15 bg-[linear-gradient(135deg,rgba(91,33,182,0.18),rgba(30,41,59,0.08),rgba(0,0,0,0))] shadow-[0_0_0_1px_rgba(168,85,247,0.05),0_20px_50px_rgba(91,33,182,0.12)]">
+                        <div className="grid gap-6 p-6 lg:grid-cols-[minmax(0,1.35fr)_260px]">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <div className="text-[11px] font-semibold tracking-[0.18em] text-violet-200/80">
+                                MISSING FILINGS DETECTED
+                              </div>
+                              <div className="rounded-full border border-violet-300/20 bg-violet-400/10 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-violet-200">
+                                COVERAGE CHECK
+                              </div>
+                            </div>
+
+                            <div className="mt-4 text-2xl font-semibold tracking-tight text-white sm:text-[2rem]">
+                              {filingCoverageSummary.entitiesWithoutFilings > 0
+                                ? `${filingCoverageSummary.entitiesWithoutFilings} ${filingCoverageSummary.entitiesWithoutFilings === 1 ? "entity may be missing filings" : "entities may be missing filings"}`
+                                : "No obvious missing filing coverage"}
+                            </div>
+
+                            <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-300">
+                              {filingCoverageSummary.message} Use this as a fast dashboard signal, then confirm setup and missing compliance work from the filings page.
+                            </p>
+
+                            <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-slate-300">
+                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5">
+                                {filingCoverageSummary.entitiesWithFilings} entities with filings
+                              </span>
+                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5">
+                                {filingCoverageSummary.entitiesWithoutFilings} entities without visible filings
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                            <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
+                              NEXT STEP
+                            </div>
+
+                            <div className="mt-4 space-y-3">
+                              <PriorityMiniStat
+                                label="Coverage"
+                                value={
+                                  filingCoverageSummary.entitiesWithoutFilings > 0
+                                    ? "Needs review"
+                                    : "Looks healthy"
+                                }
+                              />
+                              <PriorityMiniStat
+                                label="Entities"
+                                value={`${filingCoverageSummary.entitiesWithFilings}/${workspaceSummary.entityCount || 0} tracked`}
+                              />
+                            </div>
+
+                            <div className="mt-5 flex flex-col gap-3">
+                              <Link
+                                href="/filings"
+                                className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
+                              >
+                                Review Filings
+                              </Link>
+                              <Link
+                                href="/businesses"
+                                className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-violet-400 to-cyan-400 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(168,85,247,0.18)] transition-all duration-150 hover:scale-[1.02] hover:from-violet-300 hover:to-cyan-300 active:scale-[0.98]"
+                              >
+                                Check Entity Setup
+                              </Link>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     {loading && (
                       <div className="mt-8 rounded-3xl border border-white/10 bg-white/[0.03] px-5 py-8 text-sm text-slate-400">
                         Loading your workspace...
@@ -930,15 +1030,15 @@ export default function DashboardPage() {
                     )}
 
                     {!loading && topPriority && topCardStyle && (
-                      <div className={`mt-10 overflow-hidden rounded-[32px] ${topCardStyle.wrapper}`}>
-                        <div className="grid gap-8 p-6 lg:grid-cols-[minmax(0,1.4fr)_340px] lg:p-7">
+                      <div className={`mt-10 overflow-hidden rounded-[32px] shadow-[0_0_40px_rgba(34,211,238,0.18)] ${topCardStyle.wrapper}`}>
+                        <div className="grid gap-8 p-8 lg:grid-cols-[minmax(0,1.45fr)_340px] lg:p-9">
                           <div>
                             <div className="flex flex-wrap items-center gap-3">
                               <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
-                                TOP PRIORITY
+                                START HERE
                               </div>
                               <div className="rounded-full border border-yellow-300/20 bg-yellow-400/10 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-yellow-300">
-                                START WITH THIS ONE
+                                DO THIS NEXT
                               </div>
                             </div>
 
@@ -954,7 +1054,7 @@ export default function DashboardPage() {
                               </div>
 
                               <div className="min-w-0">
-                                <div className="text-2xl font-semibold tracking-tight text-white sm:text-[2rem]">
+                                <div className="text-3xl font-semibold tracking-tight text-white sm:text-[2.25rem]">
                                   {topPriority.title}
                                 </div>
                                 <div className="mt-2 text-sm text-slate-400 sm:text-base">{topPriority.company}</div>
@@ -971,6 +1071,9 @@ export default function DashboardPage() {
                                       ? "Prepared and ready to submit"
                                       : "Coming up next"}
                                   </span>
+                                </div>
+                                <div className="mt-3 inline-flex items-center rounded-full border border-red-400/20 bg-red-500/10 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-red-200">
+                                  ⚠ HIGHEST RISK IF IGNORED
                                 </div>
 
                                 <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-300">
@@ -1001,7 +1104,7 @@ export default function DashboardPage() {
                               <button
                                 type="button"
                                 onClick={() => handlePrimaryAction(topPriority)}
-                                className="rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.22)] transition hover:from-cyan-300 hover:to-blue-400"
+                                className="rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.22)] transition-all duration-150 hover:scale-[1.02] hover:from-cyan-300 hover:to-blue-400 active:scale-[0.98]"
                               >
                                 {topPriority.primaryAction} →
                               </button>
@@ -1020,9 +1123,9 @@ export default function DashboardPage() {
                     <div className="mt-10 space-y-8">
                       <div className="flex items-center justify-between">
                         <div>
-                          <div className="text-sm font-semibold text-white">Action Center</div>
+                          <div className="text-sm font-semibold text-white">Work Queue</div>
                           <div className="mt-1 text-sm text-slate-400">
-                            A single ranked queue for what should be touched next. Use the filings page for the complete working list.
+                            Work through these in order. This is your execution list.
                           </div>
                         </div>
                         <Link
@@ -1040,9 +1143,9 @@ export default function DashboardPage() {
                               <CheckCircle2 size={20} />
                             </div>
                             <div>
-                              <div className="text-lg font-semibold text-white">All caught up</div>
+                              <div className="text-lg font-semibold text-white">All clear</div>
                               <div className="mt-2 max-w-2xl text-sm leading-7 text-slate-300">
-                                Nothing is overdue, due soon, or waiting to be filed right now. Future deadlines stay on the filings page until they need attention.
+                                Everything urgent is under control right now. Future deadlines stay on the filings page until they need attention.
                               </div>
                             </div>
                           </div>
@@ -1067,8 +1170,9 @@ export default function DashboardPage() {
                             {prioritizedActionItems.map((row) => (
                               <div
                                 key={row.id}
-                                className="flex flex-col gap-4 px-5 py-4 lg:flex-row lg:items-center lg:justify-between"
+                                className="group relative flex flex-col gap-4 px-5 py-4 transition-all duration-200 hover:bg-white/[0.04] lg:flex-row lg:items-center lg:justify-between"
                               >
+                                <div className="absolute left-0 top-0 h-full w-[2px] bg-cyan-400/40" />
                                 <div className="flex min-w-0 items-start gap-4">
                                   <div className={`mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-sm font-semibold ${row.iconClass}`}>
                                     {row.icon}
@@ -1089,14 +1193,14 @@ export default function DashboardPage() {
                                   <button
                                     type="button"
                                     onClick={() => handlePrimaryAction(row)}
-                                    className={`rounded-xl px-3 py-2 text-sm font-medium ${row.primaryClass}`}
+                                    className={`rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 hover:scale-[1.02] active:scale-[0.98] ${row.primaryClass}`}
                                   >
                                     {row.primaryAction}
                                   </button>
 
                                   <Link
                                     href="/filings"
-                                    className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 hover:bg-white/10"
+                                    className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 transition-all duration-150 hover:scale-[1.02] hover:bg-white/10 active:scale-[0.98]"
                                   >
                                     View
                                   </Link>
@@ -1145,9 +1249,9 @@ export default function DashboardPage() {
                         <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03]">
                           <div className="flex flex-col gap-3 border-b border-white/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
                             <div>
-                              <div className="text-sm font-semibold text-white">Upcoming</div>
+                              <div className="text-sm font-semibold text-white">Coming Up</div>
                               <div className="mt-1 text-sm text-slate-400">
-                                A light preview of future deadlines. The rest live on the filings page.
+                                Not urgent yet — these will move into your queue soon.
                               </div>
                             </div>
                             <Link
@@ -1165,7 +1269,7 @@ export default function DashboardPage() {
                               .map((row) => (
                                 <div
                                   key={row.id}
-                                  className="flex flex-col gap-4 px-5 py-4 lg:flex-row lg:items-center lg:justify-between"
+                                  className="group relative flex flex-col gap-4 px-5 py-4 transition-all duration-200 hover:bg-white/[0.04] lg:flex-row lg:items-center lg:justify-between"
                                 >
                                   <div className="flex items-start gap-4">
                                     <div className={`flex h-10 w-10 items-center justify-center rounded-xl text-sm font-semibold ${row.iconClass}`}>
@@ -1183,14 +1287,14 @@ export default function DashboardPage() {
                                   <div className="flex items-center gap-2">
                                     <Link
                                       href="/filings"
-                                      className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 hover:bg-white/10"
+                                      className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 transition-all duration-150 hover:scale-[1.02] hover:bg-white/10 active:scale-[0.98]"
                                     >
                                       View
                                     </Link>
                                     <button
                                       type="button"
                                       onClick={() => handlePrimaryAction(row)}
-                                      className={`rounded-xl px-3 py-2 text-sm font-medium ${row.primaryClass}`}
+                                      className={`rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 hover:scale-[1.02] active:scale-[0.98] ${row.primaryClass}`}
                                     >
                                       {row.primaryAction}
                                     </button>
@@ -1203,12 +1307,12 @@ export default function DashboardPage() {
                     </div>
 
                     {filedFilings.length > 0 && (
-                      <div className="mt-10 overflow-visible rounded-3xl border border-white/10 bg-white/[0.02]">
+                      <div className="mt-10 overflow-visible rounded-3xl border border-white/10 bg-white/[0.02] opacity-80">
                         <div className="border-b border-white/10 px-4 py-4 sm:px-5">
                           <div className="text-sm font-semibold text-white">
-                            Filed / Completed ({Math.min(filedFilings.length, 5)})
+                            Completed ({Math.min(filedFilings.length, 5)})
                           </div>
-                          <div className="mt-1 text-sm text-slate-400">Recently completed filings</div>
+                          <div className="mt-1 text-sm text-slate-400">Recently completed work</div>
                         </div>
 
                         <div className="overflow-visible">

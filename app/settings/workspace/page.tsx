@@ -1,138 +1,287 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { Field, Panel, SaveBar, SettingsShell, ToggleRow } from "../_shared";
+import { Field, Panel, SaveBar, SettingsShell } from "../_shared";
 
 type WorkspaceForm = {
   name: string;
-  workspaceType: string;
-  defaultState: string;
-  supportEmail: string;
-  autoCreateOnboardingDefaults: boolean;
-  showFilingReminders: boolean;
-  requireBulkConfirmations: boolean;
+  workspaceType: "firm" | "business" | "";
+  plan: string;
+  subscriptionStatus: string;
+  trialEndsAt: string;
+  onboardingCompleted: boolean;
 };
 
-async function resolveWorkspaceId(supabase: ReturnType<typeof createClient>, userId: string) {
-  const { data: memberships } = await supabase
-    .from("workspace_members")
-    .select("workspace_id")
-    .eq("user_id", userId)
-    .limit(1);
+type FirmRow = {
+  id: string;
+  name: string | null;
+  type: "firm" | "business" | null;
+  plan: string | null;
+  subscription_status: string | null;
+  trial_ends_at: string | null;
+  onboarding_completed: boolean | null;
+};
 
-  return memberships?.[0]?.workspace_id ?? null;
+function normalizeDateForInput(value: string | null | undefined) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toISOString().slice(0, 10);
+}
+
+function formatLabel(value: string | null | undefined) {
+  if (!value) return "";
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function formatDatePretty(value: string | null | undefined) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+
+  return parsed.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function getSubscriptionTone(status: string, trialEndsAt: string) {
+  const normalized = (status || "").trim().toLowerCase();
+
+  if (normalized === "active") {
+    return "border-emerald-400/20 bg-emerald-400/10 text-emerald-100";
+  }
+
+  if (normalized === "trial") {
+    if (trialEndsAt) {
+      const trialEnd = new Date(`${trialEndsAt}T23:59:59`);
+      const now = new Date();
+
+      if (!Number.isNaN(trialEnd.getTime()) && trialEnd < now) {
+        return "border-red-400/20 bg-red-400/10 text-red-100";
+      }
+    }
+
+    return "border-cyan-400/20 bg-cyan-400/10 text-cyan-100";
+  }
+
+  if (
+    normalized === "past_due" ||
+    normalized === "canceled" ||
+    normalized === "cancelled" ||
+    normalized === "expired"
+  ) {
+    return "border-red-400/20 bg-red-400/10 text-red-100";
+  }
+
+  if (normalized) {
+    return "border-amber-400/20 bg-amber-400/10 text-amber-100";
+  }
+
+  return "border-white/10 bg-white/[0.04] text-slate-300";
+}
+
+async function resolveFirmId(
+  supabase: ReturnType<typeof createClient>,
+  userId: string,
+  metadataFirmId: string | null
+) {
+  if (metadataFirmId) {
+    const { data: membership } = await supabase
+      .from("firm_members")
+      .select("firm_id")
+      .eq("user_id", userId)
+      .eq("firm_id", metadataFirmId)
+      .maybeSingle();
+
+    if (membership?.firm_id) {
+      return membership.firm_id;
+    }
+  }
+
+  const { data: memberships } = await supabase
+    .from("firm_members")
+    .select("firm_id, role")
+    .eq("user_id", userId);
+
+  if (!memberships?.length) return null;
+
+  const ownerLike =
+    memberships.find((membership) => membership.role === "owner") ||
+    memberships.find((membership) => membership.role === "admin");
+
+  return ownerLike?.firm_id || memberships[0]?.firm_id || null;
+}
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) return error.message;
+
+  if (error && typeof error === "object") {
+    const maybeError = error as Record<string, unknown>;
+    return (
+      (typeof maybeError.message === "string" && maybeError.message) ||
+      (typeof maybeError.details === "string" && maybeError.details) ||
+      (typeof maybeError.hint === "string" && maybeError.hint) ||
+      fallback
+    );
+  }
+
+  return fallback;
+}
+
+function workspaceTypeLabel(value: WorkspaceForm["workspaceType"]) {
+  if (value === "firm") return "Firm";
+  if (value === "business") return "Business";
+  return "Not set";
 }
 
 export default function WorkspaceSettingsPage() {
-  const supabase = createClient();
-
-  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const supabase = useMemo(() => createClient(), []);
+  const [firmId, setFirmId] = useState<string | null>(null);
   const [form, setForm] = useState<WorkspaceForm>({
     name: "",
     workspaceType: "",
-    defaultState: "",
-    supportEmail: "",
-    autoCreateOnboardingDefaults: true,
-    showFilingReminders: true,
-    requireBulkConfirmations: false,
+    plan: "",
+    subscriptionStatus: "",
+    trialEndsAt: "",
+    onboardingCompleted: false,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [canEdit, setCanEdit] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function loadWorkspace() {
       setLoading(true);
       setMessage("");
 
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+      try {
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
 
-      if (!user) {
-        setLoading(false);
-        return;
+        if (userError) {
+          throw userError;
+        }
+
+        if (!user) {
+          if (!cancelled) {
+            setMessage("You must be signed in to manage workspace settings.");
+            setLoading(false);
+          }
+          return;
+        }
+
+        const metadataFirmId =
+          typeof user.user_metadata?.firm_id === "string"
+            ? user.user_metadata.firm_id
+            : typeof user.user_metadata?.workspace_id === "string"
+              ? user.user_metadata.workspace_id
+              : null;
+
+        const resolvedFirmId = await resolveFirmId(supabase, user.id, metadataFirmId);
+
+        if (!resolvedFirmId) {
+          if (!cancelled) {
+            setMessage("No workspace found for this account.");
+            setLoading(false);
+          }
+          return;
+        }
+
+        const { data: membership, error: membershipError } = await supabase
+          .from("firm_members")
+          .select("role")
+          .eq("firm_id", resolvedFirmId)
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        if (membershipError) {
+          throw membershipError;
+        }
+
+        const { data: firm, error: firmError } = await supabase
+          .from("firms")
+          .select("id, name, type, plan, subscription_status, trial_ends_at, onboarding_completed")
+          .eq("id", resolvedFirmId)
+          .single<FirmRow>();
+
+        if (firmError) {
+          throw firmError;
+        }
+
+        if (cancelled) return;
+
+        setFirmId(firm.id);
+        setCanEdit(membership?.role === "owner" || membership?.role === "admin");
+        setForm({
+          name: firm.name || "",
+          workspaceType: firm.type || "",
+          plan: firm.plan || "",
+          subscriptionStatus: firm.subscription_status || "",
+          trialEndsAt: normalizeDateForInput(firm.trial_ends_at),
+          onboardingCompleted: Boolean(firm.onboarding_completed),
+        });
+      } catch (error) {
+        if (!cancelled) {
+          setMessage(getErrorMessage(error, "Failed to load workspace settings."));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
-
-      const metadataWorkspaceId =
-        typeof user.user_metadata?.workspace_id === "string" ? user.user_metadata.workspace_id : null;
-
-      const resolvedWorkspaceId = metadataWorkspaceId || (await resolveWorkspaceId(supabase, user.id));
-
-      if (!resolvedWorkspaceId) {
-        setLoading(false);
-        setMessage("No workspace found.");
-        return;
-      }
-
-      setWorkspaceId(resolvedWorkspaceId);
-
-      const { data: workspace, error } = await supabase
-        .from("workspaces")
-        .select("name, workspace_type, default_state, support_email, auto_create_onboarding_defaults, show_filing_reminders, require_bulk_confirmations")
-        .eq("id", resolvedWorkspaceId)
-        .single();
-
-      if (error) {
-        setLoading(false);
-        setMessage(error.message);
-        return;
-      }
-
-      setForm({
-        name: workspace?.name || "",
-        workspaceType: workspace?.workspace_type || "",
-        defaultState: workspace?.default_state || "",
-        supportEmail: workspace?.support_email || "",
-        autoCreateOnboardingDefaults: workspace?.auto_create_onboarding_defaults ?? true,
-        showFilingReminders: workspace?.show_filing_reminders ?? true,
-        requireBulkConfirmations: workspace?.require_bulk_confirmations ?? false,
-      });
-
-      setLoading(false);
     }
 
-    loadWorkspace();
+    void loadWorkspace();
+
+    return () => {
+      cancelled = true;
+    };
   }, [supabase]);
 
   async function saveWorkspace() {
-    if (!workspaceId) return;
+    if (!firmId || !canEdit) return;
 
     setSaving(true);
     setMessage("");
 
-    const { error } = await supabase
-      .from("workspaces")
-      .update({
-        name: form.name,
-        default_state: form.defaultState,
-        support_email: form.supportEmail,
-        auto_create_onboarding_defaults: form.autoCreateOnboardingDefaults,
-        show_filing_reminders: form.showFilingReminders,
-        require_bulk_confirmations: form.requireBulkConfirmations,
-      })
-      .eq("id", workspaceId);
+    try {
+      const payload = {
+        name: form.name.trim(),
+      };
 
-    setSaving(false);
+      const { error } = await supabase.from("firms").update(payload).eq("id", firmId);
 
-    if (error) {
-      setMessage(error.message);
-      return;
+      if (error) {
+        throw error;
+      }
+
+      setMessage("Workspace settings saved.");
+    } catch (error) {
+      setMessage(getErrorMessage(error, "Failed to save workspace settings."));
+    } finally {
+      setSaving(false);
     }
-
-    setMessage("Workspace settings saved.");
   }
+
+  const statusTone = getSubscriptionTone(form.subscriptionStatus, form.trialEndsAt);
 
   return (
     <SettingsShell
       title="Workspace settings"
-      description="Manage your firm or business identity, default preferences, and workspace-level operating controls."
+      description="Manage your firm or business identity, review subscription status, and keep the workspace aligned with how Due Horizon is actually structured."
     >
       <div className="space-y-6">
         <Panel
           title="Workspace details"
-          description="This is the core identity of your workspace and the foundation for firm-wide settings."
+          description="These values come from your active firm record and drive core behavior across the app."
         >
           {loading ? (
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-8 text-sm text-slate-400">
@@ -141,48 +290,92 @@ export default function WorkspaceSettingsPage() {
           ) : (
             <>
               <div className="grid gap-4 md:grid-cols-2">
-                <Field label="Workspace name" value={form.name} onChange={(value) => setForm((prev) => ({ ...prev, name: value }))} />
-                <Field label="Workspace type" value={form.workspaceType} onChange={(value) => setForm((prev) => ({ ...prev, workspaceType: value }))} />
-                <Field label="Default state" value={form.defaultState} onChange={(value) => setForm((prev) => ({ ...prev, defaultState: value }))} />
-                <Field label="Support email" type="email" value={form.supportEmail} onChange={(value) => setForm((prev) => ({ ...prev, supportEmail: value }))} />
+                <Field
+                  label="Workspace name"
+                  value={form.name}
+                  onChange={(value) => setForm((prev) => ({ ...prev, name: value }))}
+                />
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-300">
+                    Workspace type
+                  </label>
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-400">
+                    {workspaceTypeLabel(form.workspaceType)}
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">
+                    Workspace type is set during onboarding and can’t be edited here.
+                  </p>
+                </div>
               </div>
+
+              {!canEdit && (
+                <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+                  You have read-only access to this workspace. Only owners and admins can make changes.
+                </div>
+              )}
+
+              {message && (
+                <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-300">
+                  {message}
+                </div>
+              )}
+
+              <SaveBar
+                primary="Save Workspace Settings"
+                onPrimaryClick={saveWorkspace}
+                saving={saving}
+              />
             </>
           )}
         </Panel>
 
         <Panel
-          title="Operational defaults"
-          description="Choose workspace-wide defaults that shape how the rest of the app behaves."
+          title="Workspace health"
+          description="Live values from the firm record so you can quickly verify the workspace is in the right state."
         >
           {loading ? (
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-8 text-sm text-slate-400">
-              Loading defaults...
+              Loading workspace health...
             </div>
           ) : (
-            <>
-              <div className="space-y-3">
-                <ToggleRow
-                  title="Auto-create onboarding defaults"
-                  description="Create sensible default settings for newly added entities."
-                  enabled={form.autoCreateOnboardingDefaults}
-                  onChange={(next) => setForm((prev) => ({ ...prev, autoCreateOnboardingDefaults: next }))}
-                />
-                <ToggleRow
-                  title="Show filing reminders"
-                  description="Enable workspace-wide reminders for upcoming due dates."
-                  enabled={form.showFilingReminders}
-                  onChange={(next) => setForm((prev) => ({ ...prev, showFilingReminders: next }))}
-                />
-                <ToggleRow
-                  title="Require confirmation before bulk changes"
-                  description="Reduce accidental mass updates in filings and team settings."
-                  enabled={form.requireBulkConfirmations}
-                  onChange={(next) => setForm((prev) => ({ ...prev, requireBulkConfirmations: next }))}
-                />
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                  Plan
+                </div>
+                <div className="mt-2 text-lg text-white">
+                  {formatLabel(form.plan) || "Not set"}
+                </div>
               </div>
-              {message && <div className="mt-4 text-sm text-slate-300">{message}</div>}
-              <SaveBar primary="Save Workspace Settings" onPrimaryClick={saveWorkspace} saving={saving} />
-            </>
+
+              <div className={`rounded-2xl border p-4 ${statusTone}`}>
+                <div className="text-xs uppercase tracking-[0.18em] opacity-70">
+                  Subscription
+                </div>
+                <div className="mt-2 text-lg">
+                  {formatLabel(form.subscriptionStatus) || "Unknown"}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                  Trial Ends
+                </div>
+                <div className="mt-2 text-lg text-white">
+                  {formatDatePretty(form.trialEndsAt)}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                  Onboarding
+                </div>
+                <div className="mt-2 text-lg text-white">
+                  {form.onboardingCompleted ? "Completed" : "In progress"}
+                </div>
+              </div>
+            </div>
           )}
         </Panel>
       </div>

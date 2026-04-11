@@ -293,6 +293,29 @@ const filingTemplates: Record<
   },
 };
 
+function getTemplateKeyForFilingName(name: string, type?: string): FilingTemplateKey | "" {
+  const normalized = `${name || ""} ${type || ""}`.toLowerCase();
+
+  if (normalized.includes("sales tax")) return "Sales Tax Filing";
+  if (normalized.includes("payroll")) return "Payroll Tax Filing";
+  if (normalized.includes("form 941") || normalized.includes("941")) return "Form 941";
+  if (normalized.includes("form 940") || normalized.includes("940")) return "Form 940";
+  if (normalized.includes("annual report")) return "Annual Report";
+  if (normalized.includes("biennial")) return "Biennial Statement";
+  if (normalized.includes("franchise tax")) return "Franchise Tax";
+  if (normalized.includes("business license")) return "Business License Renewal";
+  if (normalized.includes("estimated tax")) return "Estimated Tax Payment";
+  if (normalized.includes("personal tax") || normalized.includes("1040")) return "Personal Tax Return";
+  if (normalized.includes("corporate tax") || (normalized.includes("1120") && !normalized.includes("1120s"))) return "Corporate Tax Return";
+  if (normalized.includes("partnership") || normalized.includes("1065")) return "Partnership Return";
+  if (normalized.includes("s corp") || normalized.includes("1120s")) return "S Corp Return";
+  if (normalized.includes("boi")) return "BOI Filing";
+  if (normalized.includes("1099")) return "1099 Filing";
+  if (normalized.includes("w-2") || normalized.includes("w2")) return "W-2 Filing";
+
+  return "";
+}
+
 const emptyForm: NewFilingForm = {
   title: "",
   company: "",
@@ -380,14 +403,24 @@ function normalizeFilingDisplayName(name: string, stateCode?: string, frequency?
   if (!cleaned) return cleaned;
 
   if (/sales\s+tax/i.test(cleaned)) {
-    if (normalizedState) {
-      return normalizedFrequency
-        ? `${normalizedState} Sales Tax Filing (${normalizedFrequency[0].toUpperCase()}${normalizedFrequency.slice(1)})`
-        : `${normalizedState} Sales Tax Filing`;
+    const stateNameMap: Record<string, string> = {
+      NY: "New York",
+      CA: "California",
+      FL: "Florida",
+      TX: "Texas",
+      PA: "Pennsylvania",
+    };
+
+    const stateLabel = normalizedState ? (stateNameMap[normalizedState] || normalizedState) : "";
+    const frequencyLabel = normalizedFrequency
+      ? ` (${normalizedFrequency[0].toUpperCase()}${normalizedFrequency.slice(1)})`
+      : "";
+
+    if (stateLabel) {
+      return `${stateLabel} Sales & Use Tax Return${frequencyLabel}`;
     }
-    return normalizedFrequency
-      ? `Sales Tax Filing (${normalizedFrequency[0].toUpperCase()}${normalizedFrequency.slice(1)})`
-      : "Sales Tax Filing";
+
+    return `Sales & Use Tax Return${frequencyLabel}`;
   }
 
   if (/payroll\s+tax/i.test(cleaned)) {
@@ -594,6 +627,7 @@ export default function FilingsPage() {
   const [isSavingFiling, setIsSavingFiling] = useState(false);
   const [pendingStatusIds, setPendingStatusIds] = useState<string[]>([]);
   const [pendingTaskIds, setPendingTaskIds] = useState<string[]>([]);
+  const [pendingWorkflowMaterializeIds, setPendingWorkflowMaterializeIds] = useState<string[]>([]);
   const [pendingAssigneeIds, setPendingAssigneeIds] = useState<string[]>([]);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [suggestedFilings, setSuggestedFilings] = useState<SuggestedFiling[]>([]);
@@ -696,10 +730,27 @@ export default function FilingsPage() {
     filings.find((item) => item.id === activeFilingId) ||
     null;
 
+  const activeWorkflowTasks = useMemo(() => {
+    if (!activeFiling) return [] as Task[];
+
+    if (activeFiling.tasks.length > 0) {
+      return activeFiling.tasks;
+    }
+
+    const templateKey = getTemplateKeyForFilingName(activeFiling.title, activeFiling.type);
+    if (!templateKey) return [] as Task[];
+
+    return filingTemplates[templateKey].tasks.map((task, index) => ({
+      id: `generated-${activeFiling.id}-${index}`,
+      title: task,
+      completed: false,
+    }));
+  }, [activeFiling]);
+
   const activeCompletion = activeFiling
-    ? activeFiling.tasks.length === 0
+    ? activeWorkflowTasks.length === 0
       ? 0
-      : Math.round((activeFiling.tasks.filter((task) => task.completed).length / activeFiling.tasks.length) * 100)
+      : Math.round((activeWorkflowTasks.filter((task) => task.completed).length / activeWorkflowTasks.length) * 100)
     : 0;
 
   async function resolveFirmId(userId: string, preferredFirmId?: string | null) {
@@ -947,19 +998,87 @@ export default function FilingsPage() {
     showToast("success", "Assignee updated", `${normalized} is now assigned to this filing.`);
   }
 
+  async function materializeWorkflowTasks(filing: Filing) {
+    if (!firmId) return [];
+
+    const templateKey = getTemplateKeyForFilingName(filing.title, filing.type);
+    if (!templateKey) return [];
+
+    const templateTasks = filingTemplates[templateKey].tasks;
+    if (!templateTasks.length) return [];
+
+    setPendingWorkflowMaterializeIds((prev) => [...prev, filing.id]);
+
+    const { data, error } = await supabase
+      .from("tasks")
+      .insert(
+        templateTasks.map((task) => ({
+          filing_id: filing.id,
+          title: task,
+          status: "todo",
+          assignee_user_id: null,
+        }))
+      )
+      .select("id, filing_id, title, status");
+
+    setPendingWorkflowMaterializeIds((prev) => prev.filter((id) => id !== filing.id));
+
+    if (error || !data) {
+      console.error("Failed to generate workflow tasks:", error);
+      showToast("error", "Couldn’t generate workflow", "Try again in a moment.");
+      return [];
+    }
+
+    const createdTasks: Task[] = data.map((task: any) => ({
+      id: String(task.id),
+      title: task.title,
+      completed: task.status === "done",
+    }));
+
+    setFilings((prev) =>
+      prev.map((row) =>
+        row.id === filing.id
+          ? {
+              ...row,
+              tasks: createdTasks,
+            }
+          : row
+      )
+    );
+
+    showToast("success", "Workflow generated", `${createdTasks.length} workflow step${createdTasks.length === 1 ? " was" : "s were"} created.`);
+    return createdTasks;
+  }
+
   async function toggleTask(filingId: string, taskId: string) {
-    const filing = filings.find((f) => f.id === filingId);
-    const task = filing?.tasks.find((t) => t.id === taskId);
+    let filing = filings.find((f) => f.id === filingId);
+    if (!filing) return;
+
+    let realTaskId = taskId;
+
+    if (taskId.startsWith("generated-")) {
+      const createdTasks = await materializeWorkflowTasks(filing);
+      if (!createdTasks.length) return;
+
+      const generatedIndex = Number(taskId.split("-").pop());
+      const matchedTask = Number.isFinite(generatedIndex) ? createdTasks[generatedIndex] : createdTasks[0];
+      if (!matchedTask) return;
+
+      realTaskId = matchedTask.id;
+      filing = { ...filing, tasks: createdTasks };
+    }
+
+    const task = filing.tasks.find((t) => t.id === realTaskId);
     if (!task) return;
 
     const previous = filings;
-    setPendingTaskIds((prev) => [...prev, taskId]);
+    setPendingTaskIds((prev) => [...prev, realTaskId]);
     setFilings((prev) =>
       prev.map((row) =>
         row.id === filingId
           ? {
               ...row,
-              tasks: row.tasks.map((item) => (item.id === taskId ? { ...item, completed: !item.completed } : item)),
+              tasks: row.tasks.map((item) => (item.id === realTaskId ? { ...item, completed: !item.completed } : item)),
             }
           : row
       )
@@ -968,17 +1087,17 @@ export default function FilingsPage() {
     const { error } = await supabase
       .from("tasks")
       .update({ status: task.completed ? "todo" : "done" })
-      .eq("id", taskId);
+      .eq("id", realTaskId);
 
     if (error) {
       console.error("Failed to update task:", error);
       setFilings(previous);
       showToast("error", "Couldn’t update task", "The change was rolled back.");
-      setPendingTaskIds((prev) => prev.filter((item) => item !== taskId));
+      setPendingTaskIds((prev) => prev.filter((item) => item !== realTaskId));
       return;
     }
 
-    setPendingTaskIds((prev) => prev.filter((item) => item !== taskId));
+    setPendingTaskIds((prev) => prev.filter((item) => item !== realTaskId));
   }
 
   function handlePrimaryAction(row: Filing) {
@@ -1305,72 +1424,49 @@ export default function FilingsPage() {
       w21099Enabled: profileRow.w2_1099_enabled,
     };
 
+    const existingForCompany = filings
+      .filter((filing) =>
+        companyRecord.kind === "client"
+          ? filing.clientId === companyRecord.id
+          : filing.organizationId === companyRecord.id
+      )
+      .map((filing) => ({
+        filingKey: filing.type || filing.title,
+        filingName: filing.title,
+        jurisdictionCode: filing.state,
+        dueDate: filing.dueDate,
+        status: filing.status,
+      }));
+
     const suggestions = buildSuggestedFilings({
-  profile,
-  rules: (rulesRows || []) as ComplianceRule[],
-  templates: (templateRows || []) as WorkflowTemplate[],
-});
+      profile,
+      rules: (rulesRows || []) as ComplianceRule[],
+      templates: (templateRows || []) as WorkflowTemplate[],
+      existingFilings: existingForCompany,
+    });
 
-const normalizedSuggestions = suggestions.map((suggestion) => ({
-  ...suggestion,
-  filingName: normalizeFilingDisplayName(
-    suggestion.filingName,
-    suggestion.jurisdictionCode,
-    suggestion.frequency
-  ),
-}));
+    const normalizedSuggestions = suggestions.map((suggestion) => ({
+      ...suggestion,
+      filingName: normalizeFilingDisplayName(
+        suggestion.filingName,
+        suggestion.jurisdictionCode,
+        suggestion.frequency
+      ),
+    }));
 
-const dedupedSuggestions = Array.from(
-  new Map(
-    normalizedSuggestions.map((suggestion) => {
-      const key = [
-        suggestion.jurisdictionCode.toUpperCase(),
-        filingCategoryKey(suggestion.filingName),
-        suggestion.frequency.toLowerCase(),
-      ].join("|");
+    setSuggestedFilings(normalizedSuggestions);
+    setIsLoadingSuggestions(false);
 
-      return [key, suggestion];
-    })
-  ).values()
-);
+    if (!normalizedSuggestions.length) {
+      showToast("info", "All filings are up to date", "No missing or duplicate filings were detected for this client.");
+      return;
+    }
 
-const existingForCompany = filings.filter((filing) =>
-  companyRecord.kind === "client"
-    ? filing.clientId === companyRecord.id
-    : filing.organizationId === companyRecord.id
-);
-
-const filteredSuggestions = dedupedSuggestions.filter((suggestion) => {
-  return !existingForCompany.some((existing) => {
-    const suggestionState = suggestion.jurisdictionCode.toUpperCase();
-    const existingState = (existing.state || companyRecord.state || "").toUpperCase();
-
-    const sameState =
-      !existingState ||
-      existingState === suggestionState ||
-      existingState.includes(suggestionState) ||
-      suggestionState.includes(existingState);
-
-    const existingCategory = filingCategoryKey(`${existing.title} ${existing.type}`);
-    const suggestionCategory = filingCategoryKey(suggestion.filingName);
-
-    return sameState && existingCategory === suggestionCategory;
-  });
-});
-
-setSuggestedFilings(filteredSuggestions);
-setIsLoadingSuggestions(false);
-
-if (!filteredSuggestions.length) {
-  showToast("info", "No suggestions found", "All matching filings already exist for this company.");
-  return;
-}
-
-showToast(
-  "success",
-  "Suggestions loaded",
-  `${filteredSuggestions.length} filing suggestion${filteredSuggestions.length === 1 ? "" : "s"} found.`
-);
+    showToast(
+      "success",
+      "Suggestions loaded",
+      `${normalizedSuggestions.length} filing suggestion${normalizedSuggestions.length === 1 ? "" : "s"} found.`
+    );
   }
 
   function toggleSuggestedFiling(suggestion: SuggestedFiling) {
@@ -1671,13 +1767,16 @@ showToast(
                 <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
                   <div>
                     <div className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300/80">
-                      Control Bar
+Operations Command Center
                     </div>
                     <div className="mt-2 text-lg font-semibold text-white">
                       {statusFilter === "ALL" ? "Entire workflow workspace" : `${statusFilter} workflow view`}
                     </div>
                     <div className="mt-1 text-sm text-slate-400">
-                      Keep the core workflow simple up front. Advanced filters stay tucked away until you need them.
+                      Search fast, act in bulk, and manage the selected filing from the workflow panel without losing context.
+                    </div>
+                    <div className="mt-2 text-sm text-slate-500">
+                      {counts.OVERDUE} overdue • {counts["DUE SOON"]} due soon • {counts["READY TO FILE"]} ready to file
                     </div>
                   </div>
 
@@ -1715,7 +1814,7 @@ showToast(
                   </div>
                 </div>
 
-                <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(360px,1.7fr)_220px_auto]">
+                <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(480px,1.9fr)_minmax(340px,0.9fr)]">
                   <div>
                     <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
                       Search
@@ -1741,23 +1840,12 @@ showToast(
                     </div>
                   </div>
 
-                  <div>
-                    <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                      Status
-                    </div>
-                    <StatusTabs
-                      value={statusFilter}
-                      onChange={setStatusFilter}
-                      counts={counts}
-                    />
-                  </div>
-
                   <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                      Selected
+                      Bulk actions
                     </div>
                     <div className="mt-1 text-sm text-white">
-                      {selectedCount === 0 ? "No filings selected" : `${selectedCount} filing${selectedCount === 1 ? "" : "s"} selected`}
+                      {selectedCount === 0 ? "Select one or more filings to take action." : `${selectedCount} filing${selectedCount === 1 ? "" : "s"} selected`}
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <BulkActionButton disabled={!selectedCount} onClick={() => openStatusModal("MARK_READY")}>
@@ -1774,6 +1862,17 @@ showToast(
                       </BulkActionButton>
                     </div>
                   </div>
+                </div>
+
+                <div className="mt-4">
+                  <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    Status
+                  </div>
+                  <StatusTabs
+                    value={statusFilter}
+                    onChange={setStatusFilter}
+                    counts={counts}
+                  />
                 </div>
 
                 {showAdvancedFilters && (
@@ -1821,7 +1920,7 @@ showToast(
                 )}
               </div>
 
-              <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.05fr)_420px]">
+              <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_420px]">
                 <div className="min-w-0 rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.015))] shadow-[0_24px_70px_rgba(0,0,0,0.18)]">
                   <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
                     <div>
@@ -1872,10 +1971,10 @@ showToast(
                                 setActiveFilingId(row.id);
                                 setFocusedRowId(row.id);
                               }}
-                              className={`cursor-pointer rounded-[24px] border p-4 transition ${
+                              className={`group cursor-pointer rounded-[24px] border p-4 transition-all duration-200 ${
                                 isActive
-                                  ? "border-cyan-300/25 bg-cyan-400/[0.08] shadow-[0_0_0_1px_rgba(34,211,238,0.08),0_20px_45px_rgba(2,132,199,0.10)]"
-                                  : "border-white/10 bg-white/[0.03] hover:border-white/15 hover:bg-white/[0.05]"
+                                  ? "border-cyan-400/40 bg-cyan-400/[0.10] shadow-[0_0_0_1px_rgba(34,211,238,0.14),0_0_28px_rgba(34,211,238,0.10),0_20px_45px_rgba(2,132,199,0.12)]"
+                                  : "border-white/10 bg-white/[0.03] hover:-translate-y-[1px] hover:border-cyan-400/25 hover:bg-white/[0.06] hover:shadow-[0_0_25px_rgba(34,211,238,0.08)]"
                               } ${isFocused ? "ring-1 ring-inset ring-white/12" : ""}`}
                             >
                               <div className="flex items-start gap-4">
@@ -1898,7 +1997,7 @@ showToast(
                                   <div className="flex flex-wrap items-start justify-between gap-3">
                                     <div className="min-w-0">
                                       <div className="flex flex-wrap items-center gap-2">
-                                        <div className="truncate text-base font-medium text-white">{row.title}</div>
+                                        <div className="truncate text-[15px] font-semibold text-white">{row.title}</div>
                                         <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold tracking-[0.16em] ${getStatusTone(row.status)}`}>
                                           {row.status}
                                         </span>
@@ -2005,7 +2104,7 @@ showToast(
                             <div>
                               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Workflow</div>
                               <div className="mt-1 text-sm text-slate-300">
-                                {activeFiling.tasks.filter((task) => task.completed).length} of {activeFiling.tasks.length} tasks completed
+                                {activeWorkflowTasks.filter((task) => task.completed).length} of {activeWorkflowTasks.length} tasks completed
                               </div>
                             </div>
                             <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-300">
@@ -2017,32 +2116,46 @@ showToast(
                             <div className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400" style={{ width: `${activeCompletion}%` }} />
                           </div>
 
+                          <div className="mt-3 text-xs text-slate-500">
+                            Click any workflow step to mark it complete. If a filing has no saved workflow yet, the first click will generate the full workflow automatically.
+                          </div>
+
                           <div className="mt-4 space-y-2">
-                            {activeFiling.tasks.length === 0 ? (
+                            {activeWorkflowTasks.length === 0 ? (
                               <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4 text-sm text-slate-400">
-                                No tasks were created for this filing yet.
+                                No workflow has been generated for this filing yet.
                               </div>
                             ) : (
-                              activeFiling.tasks.map((task) => {
+                              activeWorkflowTasks.map((task, index) => {
                                 const taskPending = pendingTaskIds.includes(task.id);
+                                const isGenerated = task.id.startsWith("generated-");
+                                const workflowBooting = pendingWorkflowMaterializeIds.includes(activeFiling.id);
                                 return (
                                   <button
                                     key={task.id}
                                     type="button"
                                     onClick={() => toggleTask(activeFiling.id, task.id)}
-                                    className={`flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left transition ${
+                                    className={`flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left transition-all duration-200 ${
                                       task.completed
                                         ? "border-emerald-400/15 bg-emerald-500/[0.06]"
-                                        : "border-white/10 bg-white/[0.03] hover:bg-white/[0.05]"
+                                        : "border-white/10 bg-white/[0.03] hover:-translate-y-[1px] hover:bg-white/[0.05] hover:border-cyan-300/20"
                                     }`}
                                   >
-                                    <div className={`flex h-5 w-5 items-center justify-center rounded-full border text-[11px] ${task.completed ? "border-emerald-400/25 bg-emerald-500/15 text-emerald-300" : "border-white/15 text-slate-500"}`}>
-                                      {task.completed ? "✓" : ""}
+                                    <div className={`flex h-6 w-6 items-center justify-center rounded-full border text-[11px] font-semibold ${task.completed ? "border-emerald-400/25 bg-emerald-500/15 text-emerald-300" : "border-white/15 text-slate-400"}`}>
+                                      {task.completed ? "✓" : index + 1}
                                     </div>
                                     <div className="min-w-0 flex-1">
                                       <div className={`text-sm ${task.completed ? "text-white" : "text-slate-200"}`}>{task.title}</div>
+                                      <div className="mt-1 text-xs text-slate-500">
+                                        {task.completed
+                                          ? "Completed"
+                                          : isGenerated
+                                            ? "Click to generate and start workflow"
+                                            : "Click to mark complete"}
+                                      </div>
                                     </div>
-                                    {taskPending && <span className="text-xs text-cyan-200">Saving...</span>}
+                                    {workflowBooting ? <span className="text-xs text-cyan-200">Generating...</span> : null}
+                                    {taskPending ? <span className="text-xs text-cyan-200">Saving...</span> : null}
                                   </button>
                                 );
                               })
@@ -2239,9 +2352,9 @@ function StatusTabs({
             key={option}
             type="button"
             onClick={() => onChange(option)}
-            className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-semibold tracking-[0.14em] transition ${
+            className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold tracking-[0.08em] transition-all duration-200 ${
               active
-                ? "border-cyan-300/20 bg-cyan-400/10 text-cyan-100"
+                ? "border-cyan-400/40 bg-cyan-400/10 text-cyan-100 shadow-[0_0_20px_rgba(34,211,238,0.15)]"
                 : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
             }`}
           >

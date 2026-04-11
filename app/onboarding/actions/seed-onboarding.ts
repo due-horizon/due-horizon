@@ -126,7 +126,7 @@ export async function seedWorkspaceFromOnboarding(
   let businessOrganizationId: string | null = null;
   let firmOrganizationId: string | null = null;
 
-  if (metadataFirmId) {
+  if (pendingInviteToken && metadataFirmId) {
     const { data: existingFirmRow, error: existingFirmLookupError } = await supabase
       .from("firms")
       .select("id")
@@ -370,6 +370,7 @@ export async function seedWorkspaceFromOnboarding(
     .from("firms")
     .update({
       onboarding_completed: true,
+      onboarding_completed_at: new Date().toISOString(),
     })
     .eq("id", firmId);
 
@@ -381,6 +382,7 @@ export async function seedWorkspaceFromOnboarding(
     data: {
       role: input.accountType,
       onboarded: true,
+      onboarding_completed: true,
       onboarding_completed_at: new Date().toISOString(),
       firm_id: firmId,
       workspace_id: firmId,

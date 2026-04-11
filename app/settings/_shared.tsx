@@ -92,6 +92,7 @@ export function Field({
   type = "text",
   value,
   onChange,
+  disabled = false,
 }: {
   label: string;
   helper?: string;
@@ -99,6 +100,7 @@ export function Field({
   type?: string;
   value: string;
   onChange: (value: string) => void;
+  disabled?: boolean;
 }) {
   return (
     <div>
@@ -108,7 +110,12 @@ export function Field({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white placeholder:text-slate-500 outline-none transition focus:border-cyan-300/35 focus:bg-white/[0.06]"
+        disabled={disabled}
+        className={`w-full rounded-2xl border px-4 py-3 text-sm outline-none transition ${
+          disabled
+            ? "cursor-not-allowed border-white/10 bg-white/[0.03] text-slate-400 placeholder:text-slate-600"
+            : "border-white/10 bg-white/[0.04] text-white placeholder:text-slate-500 focus:border-cyan-300/35 focus:bg-white/[0.06]"
+        }`}
       />
       {helper && <div className="mt-2 text-sm text-slate-400">{helper}</div>}
     </div>
@@ -120,17 +127,27 @@ export function ToggleRow({
   description,
   enabled = false,
   onChange,
+  disabled = false,
 }: {
   title: string;
   description: string;
   enabled?: boolean;
   onChange?: (next: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
-      onClick={() => onChange?.(!enabled)}
-      className="flex w-full items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4 text-left transition hover:bg-white/[0.05]"
+      onClick={() => {
+        if (disabled) return;
+        onChange?.(!enabled);
+      }}
+      disabled={disabled}
+      className={`flex w-full items-center justify-between gap-4 rounded-2xl border px-4 py-4 text-left transition ${
+        disabled
+          ? "cursor-not-allowed border-white/10 bg-white/[0.02] opacity-60"
+          : "border-white/10 bg-white/[0.03] hover:bg-white/[0.05]"
+      }`}
     >
       <div className="min-w-0">
         <div className="text-sm font-medium text-white">{title}</div>
@@ -147,24 +164,27 @@ export function SaveBar({
   primary = "Save Changes",
   onPrimaryClick,
   saving = false,
+  disabled = false,
 }: {
   primary?: string;
   onPrimaryClick?: () => void;
   saving?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <div className="mt-6 flex flex-wrap gap-3">
       <button
         type="button"
         onClick={onPrimaryClick}
-        disabled={saving}
+        disabled={saving || disabled}
         className="rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.22)] transition hover:from-cyan-300 hover:to-blue-400 disabled:cursor-not-allowed disabled:opacity-70"
       >
         {saving ? "Saving..." : primary}
       </button>
       <button
         type="button"
-        className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
+        disabled={saving}
+        className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
       >
         Cancel
       </button>
