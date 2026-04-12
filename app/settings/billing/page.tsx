@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Panel, SettingsShell } from "../_shared";
 
@@ -17,8 +16,8 @@ type BillingState = {
 
 function formatPlan(plan: string | null | undefined) {
   if (!plan) return "Not set";
-  const normalized = plan.toLowerCase();
 
+  const normalized = plan.toLowerCase();
   const map: Record<string, string> = {
     starter: "Starter",
     growth: "Growth",
@@ -66,16 +65,17 @@ function getDaysRemaining(value: string | null | undefined) {
 
   const now = new Date();
   const diff = end.getTime() - now.getTime();
+
   return Math.ceil(diff / (1000 * 60 * 60 * 24));
 }
 
 export default function BillingSettingsPage() {
   const supabase = useMemo(() => createClient(), []);
-  const searchParams = useSearchParams();
-
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+  const [canceled, setCanceled] = useState(false);
 
   const [billing, setBilling] = useState<BillingState>({
     plan: "",
@@ -86,6 +86,14 @@ export default function BillingSettingsPage() {
     workspaceName: "",
     workspaceType: "",
   });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
+    setSuccess(params.get("success") === "true");
+    setCanceled(params.get("canceled") === "true");
+  }, []);
 
   useEffect(() => {
     async function loadBilling() {
@@ -163,9 +171,6 @@ export default function BillingSettingsPage() {
 
     loadBilling();
   }, [supabase]);
-
-  const success = searchParams.get("success") === "true";
-  const canceled = searchParams.get("canceled") === "true";
 
   const formattedPlan = formatPlan(billing.plan);
   const formattedStatus = formatStatus(billing.subscriptionStatus);
@@ -292,8 +297,7 @@ export default function BillingSettingsPage() {
                       : "Trial timing unavailable"}
                   </div>
                   <div className="mt-2 text-sm leading-7 text-slate-300">
-                    Your workspace is currently using the {formattedPlan} plan during trial. When the
-                    trial ends, billing should continue based on your selected setup.
+                    Your workspace is currently using the {formattedPlan} plan during trial.
                   </div>
                 </div>
               )}
@@ -321,8 +325,7 @@ export default function BillingSettingsPage() {
           description="This section can show invoices, receipts, renewal dates, and downloadable billing records."
         >
           <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4 text-sm leading-7 text-slate-300">
-            Billing history will look best here as a clean table with invoice date, amount, status,
-            and a receipt download action.
+            Billing history will appear here once Stripe invoices are wired in.
           </div>
         </Panel>
       </div>
