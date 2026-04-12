@@ -820,7 +820,7 @@ export default function FilingsPage() {
       { data: filingsData },
       { data: tasksData },
     ] = await Promise.all([
-      supabase.from("firms").select("type").eq("id", resolvedFirmId).single(),
+      supabase.from("firms").select("type, name").eq("id", resolvedFirmId).single(),
       supabase.from("workspaces").select("id, name").eq("id", resolvedFirmId).maybeSingle(),
       supabase.from("clients").select("id, client_name, state_code").eq("firm_id", resolvedFirmId),
       supabase.from("organizations").select("id, legal_name, display_name, state_code").eq("firm_id", resolvedFirmId),
@@ -849,10 +849,13 @@ export default function FilingsPage() {
     }));
 
     const fallbackBusinessName =
+      (typeof firm?.name === "string" ? firm.name : "") ||
       workspace?.name ||
       (typeof user.user_metadata?.firm_name === "string" ? user.user_metadata.firm_name : "") ||
       (typeof user.user_metadata?.business_name === "string" ? user.user_metadata.business_name : "") ||
+      (typeof user.user_metadata?.company_name === "string" ? user.user_metadata.company_name : "") ||
       (typeof user.user_metadata?.workspace_name === "string" ? user.user_metadata.workspace_name : "") ||
+      (typeof user.user_metadata?.account_name === "string" ? user.user_metadata.account_name : "") ||
       "";
 
     const fallbackBusinessState =
@@ -1355,6 +1358,19 @@ export default function FilingsPage() {
   }
 
   function openModal() {
+    if (
+      workspaceType === "business_owner" &&
+      !newFiling.company &&
+      companyOptions.length === 1 &&
+      companyOptions[0]?.kind === "organization"
+    ) {
+      setNewFiling((current) => ({
+        ...current,
+        company: companyOptions[0].name,
+        state: companyOptions[0].state ? companyOptions[0].state.toUpperCase() : current.state,
+      }));
+    }
+
     setIsModalOpen(true);
     setSubmitAttempted(false);
     setErrors({});
