@@ -39,14 +39,57 @@ export default function LoginPage() {
       : "/signup";
   }, [nextParam, planParam, typeParam, workspaceParam, inviteParam]);
 
+  const selectedPlanLabel = useMemo(() => {
+    if (!planParam) return null;
+
+    const normalized = planParam.trim().toLowerCase();
+
+    const map: Record<string, string> = {
+      starter: "Starter",
+      growth: "Growth",
+      scale: "Scale",
+      core: "Core",
+      operations: "Operations",
+      enterprise: "Enterprise",
+    };
+
+    return map[normalized] || planParam;
+  }, [planParam]);
+
+  const selectedTypeLabel = useMemo(() => {
+    if (!typeParam) return null;
+
+    const normalized = typeParam.trim().toLowerCase();
+
+    if (normalized === "firm" || normalized === "accounting_firm") return "Firm";
+    if (normalized === "business" || normalized === "business_owner") return "Business";
+
+    return typeParam;
+  }, [typeParam]);
+
+  const selectedContextLabel = useMemo(() => {
+    if (selectedPlanLabel && selectedTypeLabel) {
+      return `${selectedTypeLabel} ${selectedPlanLabel}`;
+    }
+
+    return selectedPlanLabel || selectedTypeLabel || null;
+  }, [selectedPlanLabel, selectedTypeLabel]);
+
   const oauthRedirectUrl = useMemo(() => {
     if (typeof window === "undefined") return "";
 
     const callbackUrl = new URL("/auth/callback", window.location.origin);
-    callbackUrl.searchParams.set(
-      "next",
-      nextParam && nextParam.startsWith("/") ? nextParam : "/onboarding"
-    );
+
+    const normalizedNext =
+      nextParam &&
+      nextParam.startsWith("/") &&
+      nextParam !== "/" &&
+      nextParam !== "/login" &&
+      nextParam !== "/signup"
+        ? nextParam
+        : "/onboarding";
+
+    callbackUrl.searchParams.set("next", normalizedNext);
 
     if (planParam) callbackUrl.searchParams.set("plan", planParam);
     if (typeParam) callbackUrl.searchParams.set("type", typeParam);
@@ -107,9 +150,17 @@ export default function LoginPage() {
 
   const buildDestinationUrl = async (userId: string, preferredFirmId?: string | null) => {
     const computedPath = await getPostLoginPath(userId, preferredFirmId);
-    const basePath =
-      nextParam && nextParam.startsWith("/") ? nextParam : computedPath;
 
+    const normalizedNext =
+      nextParam &&
+      nextParam.startsWith("/") &&
+      nextParam !== "/" &&
+      nextParam !== "/login" &&
+      nextParam !== "/signup"
+        ? nextParam
+        : null;
+
+    const basePath = normalizedNext || computedPath;
     const shouldPreserveContext = basePath === "/onboarding";
 
     if (!shouldPreserveContext) {
@@ -213,12 +264,22 @@ export default function LoginPage() {
       <div className="relative grid w-full max-w-6xl items-center gap-14 lg:grid-cols-[1.05fr_0.95fr]">
         <div className="space-y-6">
           <div className="space-y-5">
-            <div className="inline-flex items-center rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-cyan-300">
-              Built for firms and businesses
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex items-center rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-cyan-300">
+                Built for firms and businesses
+              </div>
+
+              {selectedContextLabel && (
+                <div className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-200">
+                  Continuing with {selectedContextLabel}
+                </div>
+              )}
             </div>
 
             <h1 className="max-w-xl text-4xl font-semibold leading-[1.05] tracking-[-0.03em] text-white sm:text-5xl">
-              Welcome back to the command center for your compliance work.
+              {selectedContextLabel
+                ? `Sign in to continue with ${selectedContextLabel}.`
+                : "Welcome back to the command center for your compliance work."}
             </h1>
 
             <p className="max-w-lg text-lg leading-8 text-slate-400">
@@ -240,8 +301,24 @@ export default function LoginPage() {
             <div className="mb-6">
               <h2 className="text-2xl font-semibold tracking-tight text-white">Sign in</h2>
               <p className="mt-2 text-sm leading-6 text-slate-400">
-                Access your dashboard and pick up where you left off.
+                {selectedContextLabel
+                  ? `Access your account to continue with ${selectedContextLabel} and pick up where you left off.`
+                  : "Access your dashboard and pick up where you left off."}
               </p>
+
+              {selectedContextLabel && (
+                <div className="mt-4 rounded-2xl border border-cyan-400/15 bg-cyan-400/8 px-4 py-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-300/85">
+                    Saved selection
+                  </div>
+                  <div className="mt-1 text-sm font-medium text-white">
+                    {selectedContextLabel}
+                  </div>
+                  <div className="mt-1 text-xs leading-6 text-slate-300">
+                    We’ll carry this selection through sign in so you can continue onboarding without losing context.
+                  </div>
+                </div>
+              )}
             </div>
 
             {error && (
@@ -335,6 +412,16 @@ export default function LoginPage() {
               New here?{" "}
               <Link href={signUpHref} className="font-medium text-cyan-300 transition hover:text-cyan-200">
                 Start free trial
+              </Link>
+            </div>
+
+            <div className="mt-4 text-center">
+              <Link
+                href="/home"
+                className="group inline-flex items-center justify-center gap-1 text-sm font-medium text-slate-400 transition hover:text-white"
+              >
+                <span className="transition group-hover:-translate-x-0.5">←</span>
+                Back to home
               </Link>
             </div>
           </div>

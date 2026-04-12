@@ -5,9 +5,10 @@ function safePath(value: string | null, fallback = "/dashboard") {
   if (!value) return fallback;
   if (!value.startsWith("/")) return fallback;
   if (value.startsWith("//")) return fallback;
+  if (value === "/") return fallback;
+  if (value === "/login" || value === "/signup") return fallback;
   return value;
 }
-
 function createSlug(value: string) {
   return value
     .toLowerCase()
@@ -250,15 +251,19 @@ export async function GET(request: Request) {
       return NextResponse.redirect(`${origin}/dashboard`);
     }
 
-    return NextResponse.redirect(
-      buildRedirectUrl(origin, "/onboarding", {
-        next: "/dashboard",
-        plan: pendingPlanRaw ? normalizedPlan : null,
-        type: normalizedType,
-        workspace: pendingWorkspaceName,
-        invite: pendingInviteToken,
-      })
-    );
+      const finalNext =
+    next === "/" || next === "/login" || next === "/signup"
+      ? "/dashboard"
+      : next;
+
+  return NextResponse.redirect(
+    buildRedirectUrl(origin, finalNext, {
+      plan: finalNext === "/onboarding" ? (pendingPlanRaw ? normalizedPlan : null) : null,
+      type: finalNext === "/onboarding" ? normalizedType : null,
+      workspace: finalNext === "/onboarding" ? pendingWorkspaceName : null,
+      invite: finalNext === "/onboarding" ? pendingInviteToken : null,
+    })
+  );
   }
 
   if (next === "/onboarding") {

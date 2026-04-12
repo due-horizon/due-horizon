@@ -60,6 +60,9 @@ type WorkspaceSummary = {
   workspaceName: string;
   workspaceType: "accounting_firm" | "business_owner" | "unknown";
   plan: string;
+  subscriptionStatus: string;
+  stripeCustomerId: string | null;
+  firmId: string | null;
   entityCount: number;
 };
 
@@ -184,9 +187,14 @@ export default function DashboardPage() {
     workspaceName: "",
     workspaceType: "unknown",
     plan: "starter",
+    subscriptionStatus: "inactive",
+    stripeCustomerId: null,
+    firmId: null,
     entityCount: 0,
   });
   const [userInitials, setUserInitials] = useState("");
+  const [currentUserEmail, setCurrentUserEmail] = useState("");
+  const [billingActionLoading, setBillingActionLoading] = useState<string | null>(null);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isAlertsOpen, setIsAlertsOpen] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -264,6 +272,8 @@ export default function DashboardPage() {
       return;
     }
 
+    setCurrentUserEmail(user.email || "");
+
     const nameFromUser =
       user.user_metadata?.full_name ||
       user.user_metadata?.name ||
@@ -297,6 +307,7 @@ export default function DashboardPage() {
     const [
       { data: membership },
       { data: workspace },
+      { data: firmBilling },
       { data: clients },
       { data: organizations },
       { data: filingsData, error: filingsError },
@@ -312,6 +323,11 @@ export default function DashboardPage() {
         .select("id, name, workspace_type")
         .eq("id", resolvedWorkspaceId)
         .single(),
+      supabase
+        .from("firms")
+        .select("id, plan, subscription_status, stripe_customer_id, type")
+        .eq("id", resolvedWorkspaceId)
+        .maybeSingle(),
       supabase
         .from("clients")
         .select("id, client_name")
@@ -350,14 +366,26 @@ export default function DashboardPage() {
     );
 
     setFilings(mapped);
+    const resolvedWorkspaceType =
+      (firmBilling?.type as "accounting_firm" | "business_owner" | "unknown" | undefined) ||
+      workspace?.workspace_type ||
+      "unknown";
+
     setWorkspaceSummary({
       workspaceName: workspace?.name || "",
-      workspaceType: workspace?.workspace_type || "unknown",
+      workspaceType: resolvedWorkspaceType,
       plan:
+        (typeof firmBilling?.plan === "string" && firmBilling.plan) ||
         (typeof user.user_metadata?.plan === "string" && user.user_metadata.plan) ||
         "starter",
+      subscriptionStatus:
+        (typeof firmBilling?.subscription_status === "string" && firmBilling.subscription_status) ||
+        "inactive",
+      stripeCustomerId:
+        typeof firmBilling?.stripe_customer_id === "string" ? firmBilling.stripe_customer_id : null,
+      firmId: resolvedWorkspaceId,
       entityCount:
-        workspace?.workspace_type === "accounting_firm"
+        resolvedWorkspaceType === "accounting_firm"
           ? (clients || []).length
           : (organizations || []).length,
     });
@@ -493,6 +521,113 @@ export default function DashboardPage() {
   ];
 
   const topCardStyle = topPriority ? getTopCardStyle(topPriority.bucket) : null;
+
+  const hasActiveSubscription =
+    workspaceSummary.subscriptionStatus === "active" ||
+    workspaceSummary.subscriptionStatus === "trialing";
+
+  const planOptions =
+    workspaceSummary.workspaceType === "accounting_firm"
+      ? [
+          {
+            key: "starter",
+            title: "Starter",
+            subtitle: "For smaller firms getting organized",
+          },
+          {
+            key: "growth",
+            title: "Growth",
+            subtitle: "For growing firms with more clients and workflow volume",
+            featured: true,
+          },
+          {
+            key: "scale",
+            title: "Scale",
+            subtitle: "For higher-volume firms that need more control",
+          },
+        ]
+      : [
+          {
+            key: "core",
+            title: "Core",
+            subtitle: "For businesses starting to centralize compliance",
+          },
+          {
+            key: "operations",
+            title: "Operations",
+            subtitle: "For teams that need stronger process control",
+            featured: true,
+          },
+          {
+            key: "enterprise",
+            title: "Enterprise",
+            subtitle: "For more complex businesses and broader oversight",
+          },
+        ];
+
+  async function handlePlanSelection(planKey: string) {
+    if (!workspaceSummary.firmId || !currentUserEmail) return;
+
+    const isCurrentPlan = workspaceSummary.plan === planKey;
+    if (isCurrentPlan && hasActiveSubscription) return;
+
+    try {
+      setBillingActionLoading(planKey);
+
+      if (hasActiveSubscription && workspaceSummary.stripeCustomerId) {
+        const portalResponse = await fetch("/api/stripe/portal", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            customerId: workspaceSummary.stripeCustomerId,
+            returnUrl: `${window.location.origin}/dashboard`,
+          }),
+        });
+
+        const portalData = await portalResponse.json();
+        if (!portalResponse.ok) {
+          throw new Error(portalData.error || "Unable to open billing portal.");
+        }
+
+        if (portalData.url) {
+          window.location.href = portalData.url;
+          return;
+        }
+      }
+
+      const checkoutResponse = await fetch("/api/stripe/checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          firmId: workspaceSummary.firmId,
+          email: currentUserEmail,
+          accountType:
+            workspaceSummary.workspaceType === "accounting_firm" ? "firm" : "business",
+          plan: planKey,
+        }),
+      });
+
+      const checkoutData = await checkoutResponse.json();
+      if (!checkoutResponse.ok) {
+        throw new Error(checkoutData.error || "Unable to start checkout.");
+      }
+
+      if (checkoutData.url) {
+        window.location.href = checkoutData.url;
+      }
+    } catch (error) {
+      console.error("Plan selection failed:", error);
+      window.alert(
+        error instanceof Error ? error.message : "Unable to continue with billing right now."
+      );
+    } finally {
+      setBillingActionLoading(null);
+    }
+  }
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.08),transparent_28%),linear-gradient(to_bottom,#07111f,#020617)] text-white">
@@ -949,6 +1084,55 @@ export default function DashboardPage() {
                           accent="blue"
                         />
                       </Link>
+                    </div>
+
+                    <div className="mt-8 overflow-hidden rounded-[28px] border border-cyan-400/10 bg-[linear-gradient(180deg,rgba(8,15,28,0.92),rgba(7,17,31,0.95))] shadow-[0_20px_60px_rgba(0,0,0,0.28)]">
+                      <div className="border-b border-white/10 px-5 py-4 sm:px-6">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-white">Billing & plan management</div>
+                            <div className="mt-1 text-sm text-slate-400">
+                              {hasActiveSubscription
+                                ? "Your workspace is subscribed. Use the current card as a reference and change plans through Stripe."
+                                : "Choose a plan below to start checkout and activate billing for this workspace."}
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.18em] text-slate-500">
+                            <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-slate-300">
+                              {workspaceSummary.plan} plan
+                            </span>
+                            <span className="rounded-full border border-cyan-300/15 bg-cyan-400/10 px-3 py-1 text-cyan-200">
+                              {workspaceSummary.subscriptionStatus}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-4 p-5 md:grid-cols-3">
+                        {planOptions.map((plan) => {
+                          const isCurrentPlan = workspaceSummary.plan === plan.key;
+                          const buttonLabel = isCurrentPlan && hasActiveSubscription
+                            ? "Current plan"
+                            : hasActiveSubscription
+                              ? "Change plan"
+                              : "Start free trial";
+
+                          return (
+                            <PlanActionCard
+                              key={plan.key}
+                              title={plan.title}
+                              subtitle={plan.subtitle}
+                              featured={Boolean(plan.featured)}
+                              isCurrentPlan={isCurrentPlan}
+                              hasActiveSubscription={hasActiveSubscription}
+                              buttonLabel={billingActionLoading === plan.key ? "Loading..." : buttonLabel}
+                              disabled={billingActionLoading !== null || (isCurrentPlan && hasActiveSubscription)}
+                              onClick={() => handlePlanSelection(plan.key)}
+                            />
+                          );
+                        })}
+                      </div>
                     </div>
 
                     {!loading && (
@@ -1600,6 +1784,81 @@ function StatCard({
           {icon}
         </div>
       </div>
+    </div>
+  );
+}
+
+function PlanActionCard({
+  title,
+  subtitle,
+  featured = false,
+  isCurrentPlan,
+  hasActiveSubscription,
+  buttonLabel,
+  disabled,
+  onClick,
+}: {
+  title: string;
+  subtitle: string;
+  featured?: boolean;
+  isCurrentPlan: boolean;
+  hasActiveSubscription: boolean;
+  buttonLabel: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <div
+      className={`rounded-3xl border p-5 transition ${
+        featured
+          ? "border-cyan-300/20 bg-[linear-gradient(180deg,rgba(34,211,238,0.12),rgba(37,99,235,0.06))] shadow-[0_0_30px_rgba(34,211,238,0.08)]"
+          : "border-white/10 bg-white/[0.03]"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-lg font-semibold text-white">{title}</div>
+          <div className="mt-2 text-sm leading-6 text-slate-400">{subtitle}</div>
+        </div>
+
+        {featured && (
+          <span className="rounded-full border border-cyan-300/20 bg-cyan-400/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-cyan-200">
+            Popular
+          </span>
+        )}
+      </div>
+
+      <div className="mt-5 flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.16em] text-slate-500">
+        {isCurrentPlan && hasActiveSubscription && (
+          <span className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-2.5 py-1 text-emerald-300">
+            Current
+          </span>
+        )}
+        {hasActiveSubscription ? (
+          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-slate-300">
+            Managed by Stripe
+          </span>
+        ) : (
+          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-slate-300">
+            Starts in Checkout
+          </span>
+        )}
+      </div>
+
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        className={`mt-6 inline-flex w-full items-center justify-center rounded-xl px-4 py-2.5 text-sm font-semibold transition ${
+          disabled
+            ? "cursor-not-allowed border border-white/10 bg-white/[0.04] text-slate-500"
+            : featured
+              ? "bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 hover:from-cyan-300 hover:to-blue-400"
+              : "border border-white/10 bg-white/5 text-slate-100 hover:bg-white/10"
+        }`}
+      >
+        {buttonLabel}
+      </button>
     </div>
   );
 }

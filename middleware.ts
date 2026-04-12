@@ -142,20 +142,39 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  if (isAuthPage) {
+   if (isAuthPage) {
+    const requestedNext = request.nextUrl.searchParams.get("next");
+    const safeNext =
+      requestedNext &&
+      requestedNext.startsWith("/") &&
+      !requestedNext.startsWith("//") &&
+      requestedNext !== "/" &&
+      requestedNext !== "/login" &&
+      requestedNext !== "/signup"
+        ? requestedNext
+        : null;
+
+    if (safeNext) {
+      const url = request.nextUrl.clone();
+      url.pathname = safeNext;
+      url.search = "";
+      return NextResponse.redirect(url);
+    }
+
     if (onboardingCompleted) {
       const url = request.nextUrl.clone();
       url.pathname = DASHBOARD_PATH;
+      url.search = "";
       return NextResponse.redirect(url);
     }
 
     if (resolvedFirmId && !onboardingCompleted) {
       const url = request.nextUrl.clone();
       url.pathname = ONBOARDING_PATH;
+      url.search = "";
       return NextResponse.redirect(url);
     }
   }
-
   return response;
 }
 
