@@ -851,12 +851,12 @@ export default function FilingsPage() {
     const fallbackBusinessName =
       (typeof firm?.name === "string" ? firm.name : "") ||
       workspace?.name ||
-      (typeof user.user_metadata?.firm_name === "string" ? user.user_metadata.firm_name : "") ||
       (typeof user.user_metadata?.business_name === "string" ? user.user_metadata.business_name : "") ||
+      (typeof user.user_metadata?.firm_name === "string" ? user.user_metadata.firm_name : "") ||
       (typeof user.user_metadata?.company_name === "string" ? user.user_metadata.company_name : "") ||
       (typeof user.user_metadata?.workspace_name === "string" ? user.user_metadata.workspace_name : "") ||
       (typeof user.user_metadata?.account_name === "string" ? user.user_metadata.account_name : "") ||
-      "";
+      "My Business";
 
     const fallbackBusinessState =
       (typeof user.user_metadata?.state_code === "string" ? user.user_metadata.state_code : "") ||
@@ -1358,18 +1358,10 @@ export default function FilingsPage() {
   }
 
   function openModal() {
-    if (
-      workspaceType === "business_owner" &&
-      !newFiling.company &&
-      companyOptions.length === 1 &&
-      companyOptions[0]?.kind === "organization"
-    ) {
-      setNewFiling((current) => ({
-        ...current,
-        company: companyOptions[0].name,
-        state: companyOptions[0].state ? companyOptions[0].state.toUpperCase() : current.state,
-      }));
-    }
+    const defaultBusinessOption =
+      workspaceType === "business_owner" && companyOptions.length === 1
+        ? companyOptions[0]
+        : null;
 
     setIsModalOpen(true);
     setSubmitAttempted(false);
@@ -1377,6 +1369,14 @@ export default function FilingsPage() {
     setSuggestedFilings([]);
     setIsLoadingSuggestions(false);
     setSelectedSuggestionKeys([]);
+
+    if (defaultBusinessOption) {
+      setNewFiling((current) => ({
+        ...current,
+        company: defaultBusinessOption.name,
+        state: defaultBusinessOption.state || current.state,
+      }));
+    }
   }
 
   function closeModal() {
