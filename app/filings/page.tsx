@@ -814,12 +814,14 @@ export default function FilingsPage() {
 
     const [
       { data: firm },
+      { data: workspace },
       { data: clients },
       { data: organizations },
       { data: filingsData },
       { data: tasksData },
     ] = await Promise.all([
       supabase.from("firms").select("type").eq("id", resolvedFirmId).single(),
+      supabase.from("workspaces").select("id, name").eq("id", resolvedFirmId).maybeSingle(),
       supabase.from("clients").select("id, client_name, state_code").eq("firm_id", resolvedFirmId),
       supabase.from("organizations").select("id, legal_name, display_name, state_code").eq("firm_id", resolvedFirmId),
       supabase
@@ -839,6 +841,30 @@ export default function FilingsPage() {
     setFirmType(resolvedWorkspaceType === "business_owner" ? "business" : resolvedWorkspaceType === "accounting_firm" ? "firm" : null);
     setWorkspaceType(resolvedWorkspaceType);
 
+    const normalizedOrganizations = (organizations || []).map((o) => ({
+      id: o.id,
+      name: o.display_name || o.legal_name,
+      state: o.state_code || "",
+      kind: "organization" as const,
+    }));
+
+    const fallbackBusinessName =
+      workspace?.name ||
+      (typeof user.user_metadata?.firm_name === "string" ? user.user_metadata.firm_name : "") ||
+      (typeof user.user_metadata?.business_name === "string" ? user.user_metadata.business_name : "") ||
+      (typeof user.user_metadata?.workspace_name === "string" ? user.user_metadata.workspace_name : "") ||
+      "";
+
+    const fallbackBusinessState =
+      (typeof user.user_metadata?.state_code === "string" ? user.user_metadata.state_code : "") ||
+      (typeof user.user_metadata?.state === "string" ? user.user_metadata.state : "") ||
+      "";
+
+    const shouldInjectPrimaryBusiness =
+      resolvedWorkspaceType === "business_owner" &&
+      normalizedOrganizations.length === 0 &&
+      fallbackBusinessName.trim().length > 0;
+
     const companyChoices: CompanyOption[] = [
       ...(clients || []).map((c) => ({
         id: c.id,
@@ -846,12 +872,17 @@ export default function FilingsPage() {
         state: c.state_code || "",
         kind: "client" as const,
       })),
-      ...(organizations || []).map((o) => ({
-        id: o.id,
-        name: o.display_name || o.legal_name,
-        state: o.state_code || "",
-        kind: "organization" as const,
-      })),
+      ...normalizedOrganizations,
+      ...(shouldInjectPrimaryBusiness
+        ? [
+            {
+              id: `workspace-${resolvedFirmId}`,
+              name: fallbackBusinessName.trim(),
+              state: fallbackBusinessState.trim().toUpperCase(),
+              kind: "organization" as const,
+            },
+          ]
+        : []),
     ];
 
     setCompanyOptions(companyChoices);
