@@ -65,6 +65,8 @@ type FilingTemplateMap = Record<
   }
 >;
 
+type WorkspaceType = "accounting_firm" | "business_owner" | "unknown";
+
 type AddFilingModalProps = {
   isOpen: boolean;
   onClose: () => void;
@@ -82,6 +84,7 @@ type AddFilingModalProps = {
   isLoadingSuggestions: boolean;
   isSavingFiling: boolean;
   filingTemplates?: FilingTemplateMap;
+  workspaceType: WorkspaceType;
 };
 
 type CreationMode = "engine" | "manual" | "template";
@@ -224,6 +227,7 @@ export default function AddFilingModal({
   isLoadingSuggestions,
   isSavingFiling,
   filingTemplates,
+  workspaceType,
 }: AddFilingModalProps) {
   const modalTitleRef = useRef<HTMLInputElement | null>(null);
   const companyButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -235,10 +239,21 @@ export default function AddFilingModal({
   const [companyQuery, setCompanyQuery] = useState("");
   const [isCompanyPickerOpen, setIsCompanyPickerOpen] = useState(false);
 
+  const isFirmWorkspace = workspaceType === "accounting_firm";
+  const entityLabel = isFirmWorkspace ? "client" : "business";
+  const entityLabelCap = isFirmWorkspace ? "Client" : "Business";
+  const entityLabelPlural = isFirmWorkspace ? "clients" : "businesses";
+
   const visibleCompanyOptions = useMemo(() => {
-    const clientOptions = companyOptions.filter((company) => company.kind === "client");
-    return clientOptions.length > 0 ? clientOptions : companyOptions;
-  }, [companyOptions]);
+    const filteredOptions =
+      workspaceType === "accounting_firm"
+        ? companyOptions.filter((company) => company.kind === "client")
+        : workspaceType === "business_owner"
+          ? companyOptions.filter((company) => company.kind === "organization")
+          : companyOptions;
+
+    return filteredOptions.length > 0 ? filteredOptions : companyOptions;
+  }, [companyOptions, workspaceType]);
 
   const dedupedCompanies = useMemo(() => {
     const map = new Map<string, CompanyOption>();
@@ -491,7 +506,7 @@ export default function AddFilingModal({
                 Create filings with confidence
               </h2>
               <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-400">
-                Pick a client, let the compliance engine surface smart recommendations, or switch
+                Pick a {entityLabel}, let the compliance engine surface smart recommendations, or switch
                 to a template or manual flow when you need a one-off.
               </p>
             </div>
@@ -518,7 +533,7 @@ export default function AddFilingModal({
                 <div>
                   <div className="text-sm font-semibold text-white">Use Compliance Engine</div>
                   <div className="mt-1 text-sm leading-6 text-slate-400">
-                    Smart recommendations load automatically after you choose a client.
+                    Smart recommendations load automatically after you choose a {entityLabel}.
                   </div>
                 </div>
               </div>
@@ -568,12 +583,12 @@ export default function AddFilingModal({
               <div className="rounded-[26px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.015))] p-5">
                 <SectionHeader
                   eyebrow="Step 1"
-                  title="Choose a client"
-                  description="Nothing is preselected. Once you choose a client, the engine can immediately check what belongs here."
+                  title={`Choose a ${entityLabel}`}
+                  description={`Nothing is preselected. Once you choose a ${entityLabel}, the engine can immediately check what belongs here.`}
                 />
 
                 <div className="mt-4">
-                  <label className="mb-2 block text-sm font-medium text-slate-300">Client</label>
+                  <label className="mb-2 block text-sm font-medium text-slate-300">{entityLabelCap}</label>
 
                   <div className="relative">
                     <button
@@ -587,7 +602,7 @@ export default function AddFilingModal({
                           <Building2 size={16} />
                         </span>
                         <span className={`truncate ${newFiling.company ? "text-white" : "text-slate-500"}`}>
-                          {newFiling.company || "Search or select a client"}
+                          {newFiling.company || `Search or select a ${entityLabel}`}
                         </span>
                       </span>
                       <ChevronDown size={16} className="shrink-0 text-slate-400" />
@@ -604,7 +619,7 @@ export default function AddFilingModal({
                             <input
                               value={companyQuery}
                               onChange={(event) => setCompanyQuery(event.target.value)}
-                              placeholder="Search client..."
+                              placeholder={`Search ${entityLabel}...`}
                               className={`${fieldClass(false)} pl-11`}
                             />
                           </div>
@@ -619,7 +634,7 @@ export default function AddFilingModal({
 
                           {filteredCompanies.length === 0 ? (
                             <div className="rounded-xl px-3 py-4 text-sm text-slate-500">
-                              No matching clients found.
+                              {`No matching ${entityLabelPlural} found.`}
                             </div>
                           ) : (
                             filteredCompanies.map((company) => {
@@ -683,7 +698,7 @@ export default function AddFilingModal({
 
                   {selectedCompany ? (
                     <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1.5 text-xs text-cyan-100">
-                      <span>Client selected</span>
+                      <span>{entityLabelCap} selected</span>
                       <span className="text-cyan-300/60">•</span>
                       <span>{selectedCompany.state || "No state set"}</span>
                     </div>
@@ -703,7 +718,7 @@ export default function AddFilingModal({
                         title={modeMeta.label}
                         description={
                           creationMode === "engine"
-                            ? "Recommendations appear automatically after you choose a client. Use refresh if you changed compliance settings and want to re-check."
+                            ? `Recommendations appear automatically after you choose a ${entityLabel}. Use refresh if you changed compliance settings and want to re-check.`
                             : modeMeta.description
                         }
                       />
@@ -728,7 +743,7 @@ export default function AddFilingModal({
                   <div className="mt-5 space-y-3">
                     {!newFiling.company ? (
                       <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-5 text-sm text-slate-500">
-                        Choose a client to instantly load recommended filings.
+                        {`Choose a ${entityLabel} to instantly load recommended filings.`}
                       </div>
                     ) : suggestedFilings.length === 0 ? (
                       <div className="rounded-[24px] border border-emerald-400/15 bg-[linear-gradient(180deg,rgba(16,185,129,0.08),rgba(255,255,255,0.02))] p-5">
@@ -741,7 +756,7 @@ export default function AddFilingModal({
                               All filings are up to date
                             </div>
                             <div className="mt-1 text-sm leading-6 text-slate-400">
-                              No missing or duplicate filings were detected for this client.
+                              {`No missing or duplicate filings were detected for this ${entityLabel}.`}
                             </div>
                             <div className="mt-2 text-xs text-slate-500">
                               Last checked just now.
@@ -790,7 +805,7 @@ export default function AddFilingModal({
                                     {suggestion.jurisdictionCode} • {suggestion.frequency} • {suggestion.periodLabel}
                                   </div>
                                   <div className="mt-2 text-xs text-slate-500">
-                                    Recommended from the client’s compliance settings and active filing rules.
+                                    {`Recommended from the ${entityLabel}’s compliance settings and active filing rules.`}
                                   </div>
                                 </div>
 
@@ -961,7 +976,7 @@ export default function AddFilingModal({
 
               <div className="mt-6 grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                  <div className="text-xs uppercase tracking-[0.16em] text-slate-500">Client</div>
+                  <div className="text-xs uppercase tracking-[0.16em] text-slate-500">{entityLabelCap}</div>
                   <div className="mt-2 text-sm font-medium text-white">{newFiling.company || "—"}</div>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
@@ -1058,7 +1073,7 @@ export default function AddFilingModal({
             <div className="text-sm text-slate-400">
               {canSubmit
                 ? "All required fields complete."
-                : "Select a client and complete the required fields to continue."}
+                : `Select a ${entityLabel} and complete the required fields to continue.`}
             </div>
 
             <div className="flex flex-wrap justify-end gap-3">

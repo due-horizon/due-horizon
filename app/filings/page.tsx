@@ -98,6 +98,8 @@ type ToastMessage = {
   body?: string;
 };
 
+type WorkspaceType = "accounting_firm" | "business_owner" | "unknown";
+
 const assignees = ["Unassigned", "Rob", "Staff 1", "Staff 2"];
 
 const filingTemplates: Record<
@@ -606,6 +608,7 @@ export default function FilingsPage() {
   const supabase = createClient();
   const [firmId, setFirmId] = useState<string | null>(null);
   const [firmType, setFirmType] = useState<"firm" | "business" | null>(null);
+  const [workspaceType, setWorkspaceType] = useState<WorkspaceType>("unknown");
   const [filings, setFilings] = useState<Filing[]>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"ALL" | FilingStatus>("ALL");
@@ -826,7 +829,15 @@ export default function FilingsPage() {
       supabase.from("tasks").select("id, filing_id, title, status, assignee_user_id"),
     ]);
 
-    setFirmType((firm?.type as "firm" | "business") ?? null);
+    const resolvedWorkspaceType: WorkspaceType =
+      firm?.type === "business" || firm?.type === "business_owner"
+        ? "business_owner"
+        : firm?.type === "firm" || firm?.type === "accounting_firm"
+          ? "accounting_firm"
+          : "unknown";
+
+    setFirmType(resolvedWorkspaceType === "business_owner" ? "business" : resolvedWorkspaceType === "accounting_firm" ? "firm" : null);
+    setWorkspaceType(resolvedWorkspaceType);
 
     const companyChoices: CompanyOption[] = [
       ...(clients || []).map((c) => ({
@@ -2209,6 +2220,7 @@ Operations Command Center
           isLoadingSuggestions={isLoadingSuggestions}
           isSavingFiling={isSavingFiling}
           filingTemplates={filingTemplates}
+          workspaceType={workspaceType}
         />
 
         <ConfirmModal
