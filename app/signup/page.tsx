@@ -69,6 +69,12 @@ export default function SignupPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [paramsLoaded, setParamsLoaded] = useState(false);
+
+  const [loading, setLoading] = useState(false);
+  const [loadingGoogle, setLoadingGoogle] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
   const loginHref = useMemo(() => {
     const params = new URLSearchParams();
@@ -79,13 +85,6 @@ export default function SignupPage() {
     if (inviteToken) params.set("invite", inviteToken);
     return `/login?${params.toString()}`;
   }, [selectedPlan, initialType, workspaceName, inviteToken]);
-
-  const [loading, setLoading] = useState(false);
-  const [loadingGoogle, setLoadingGoogle] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-  const [submittedEmail, setSubmittedEmail] = useState<string | null>(null);
-  const [accountCreated, setAccountCreated] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -100,39 +99,21 @@ export default function SignupPage() {
     setInitialType(inferredType);
     setInviteToken(invite);
     if (workspace) setWorkspaceName(workspace);
+
+    setParamsLoaded(true);
   }, []);
 
   useEffect(() => {
     setAccountType(initialType);
   }, [initialType]);
 
-  const [paramsLoaded, setParamsLoaded] = useState(false);
+  useEffect(() => {
+    if (!paramsLoaded) return;
 
-useEffect(() => {
-  if (typeof window === "undefined") return;
-
-  const params = new URLSearchParams(window.location.search);
-  const plan = normalizePlan(params.get("plan"));
-  const inferredType =
-    normalizeType(params.get("type")) || inferTypeFromPlan(plan);
-  const invite = params.get("invite");
-  const workspace = params.get("workspace")?.trim() || "";
-
-  setSelectedPlan(plan);
-  setInitialType(inferredType);
-  setInviteToken(invite);
-  if (workspace) setWorkspaceName(workspace);
-
-  setParamsLoaded(true); // 👈 THIS IS THE KEY
-}, []);
-
-useEffect(() => {
-  if (!paramsLoaded) return; // 👈 WAIT
-
-  if (!selectedPlan && !inviteToken) {
-    router.replace("/home#pricing");
-  }
-}, [paramsLoaded, selectedPlan, inviteToken, router]);
+    if (!selectedPlan && !inviteToken) {
+      router.replace("/home#pricing");
+    }
+  }, [paramsLoaded, selectedPlan, inviteToken, router]);
 
   const requiresWorkspaceName = !inviteToken;
   const canSubmit =
@@ -184,44 +165,131 @@ useEffect(() => {
       return;
     }
 
-    setLoading(true);
-
-    const redirectTo = buildCallbackUrl();
-    const emailToUse = email.trim();
-
-    const { error } = await supabase.auth.signUp({
-      email: emailToUse,
-      password,
-      options: {
-        emailRedirectTo: redirectTo,
-        data: {
-          pending_plan: selectedPlan,
-          pending_account_type: accountType,
-          pending_workspace_name: workspaceName.trim() || null,
-          pending_invite_token: inviteToken,
-        },
-      },
-    });
-
-    setLoading(false);
-
-    if (error) {
-      setError(error.message);
+    if (!selectedPlan) {
+      setError("Missing selected plan.");
       return;
     }
 
-    setSubmittedEmail(emailToUse);
-    setEmail("");
-    setPassword("");
-    setConfirmPassword("");
-    setShowPassword(false);
-    setShowConfirmPassword(false);
-    setAccountCreated(true);
-    setSuccess(
-      inviteToken
-        ? "Account created. Check your email to confirm your account and accept the invite."
-        : "Account created. Check your email to confirm your account and continue setup."
-    );
+    setLoading(true);
+
+    const emailToUse = email.trim();
+    const workspaceNameToUse = workspaceName.trim();
+
+    try {
+      const { error: signUpError } = await supabase.auth.signUp({
+        email: emailToUse,
+        password,
+        options: {
+          data: {
+            pending_plan: selectedPlan,
+            pending_account_type: accountType,
+            pending_workspace_name: workspaceNameToUse || null,
+            pending_invite_token: inviteToken,
+          },
+        },
+      });
+
+      if (signUpError) {
+        setError(signUpError.message);
+        setLoading(false);
+        return;
+      }
+
+      const {
+        data: loginData,
+        error: loginError,
+      } = await supabase.auth.signInWithPassword({
+        email: emailToUse,
+        password,
+      });
+
+      if (loginError || !loginData.user) {
+        setError(
+          "Account was created, but automatic sign-in failed. Turn off email confirmation in Supabase Auth for this flow."
+        );
+        setLoading(false);
+        return;
+      }
+
+      const user = loginData.user;
+
+      const { data: firm, error: firmError } = await supabase
+        .from("firms")
+        .insert({
+          owner_user_id: user.id,
+          name: workspaceNameToUse,
+          type: accountType,
+          plan: selectedPlan,
+          subscription_status: "trial",
+          onboarding_completed: false,
+          trial_ends_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+        })
+        .select("id")
+        .single();
+
+      if (firmError || !firm) {
+        setError(firmError?.message || "Failed to create workspace.");
+        setLoading(false);
+        return;
+      }
+
+      const firmId = firm.id;
+
+      const { error: membershipError } = await supabase.from("firm_members").insert({
+        user_id: user.id,
+        firm_id: firmId,
+        role: "owner",
+      });
+
+      if (membershipError) {
+        setError(membershipError.message || "Failed to attach user to workspace.");
+        setLoading(false);
+        return;
+      }
+
+      const { error: metadataError } = await supabase.auth.updateUser({
+        data: {
+          firm_id: firmId,
+          workspace_id: firmId,
+          pending_plan: selectedPlan,
+          pending_account_type: accountType,
+          pending_workspace_name: workspaceNameToUse || null,
+          pending_invite_token: inviteToken,
+        },
+      });
+
+      if (metadataError) {
+        setError(metadataError.message || "Failed to update user metadata.");
+        setLoading(false);
+        return;
+      }
+
+      const checkoutResponse = await fetch("/api/stripe/checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          firmId,
+          email: emailToUse,
+          accountType,
+          plan: selectedPlan,
+        }),
+      });
+
+      const checkoutData = await checkoutResponse.json();
+
+      if (!checkoutResponse.ok || !checkoutData.url) {
+        setError(checkoutData.error || "Failed to start Stripe checkout.");
+        setLoading(false);
+        return;
+      }
+
+      window.location.href = checkoutData.url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong creating your account.");
+      setLoading(false);
+    }
   };
 
   const handleGoogleSignup = async () => {
@@ -277,13 +345,13 @@ useEffect(() => {
             </h1>
 
             <p className="max-w-lg text-lg leading-8 text-slate-400">
-              Start your account, keep your selected plan attached, and move cleanly into onboarding.
+              Start your account, keep your selected plan attached, and move cleanly into checkout and onboarding.
             </p>
           </div>
 
           <div className="grid max-w-xl gap-3">
             <FeaturePill text="Preserves selected plan through signup" />
-            <FeaturePill text="Supports Google and email signup" />
+            <FeaturePill text="Starts checkout right after account creation" />
             <FeaturePill
               text={
                 accountType === "business"
@@ -307,7 +375,7 @@ useEffect(() => {
               <p className="mt-2 text-sm leading-6 text-slate-400">
                 {inviteToken
                   ? "Create your account to join the invited workspace."
-                  : "Start your setup and carry your plan, type, and workspace context into onboarding."}
+                  : "Start your setup and carry your plan, type, and workspace context into checkout and onboarding."}
               </p>
             </div>
 
@@ -348,157 +416,114 @@ useEffect(() => {
               </div>
             )}
 
-            {accountCreated ? (
-              <div className="space-y-4">
-                <div className="rounded-2xl border border-white/10 bg-[#020617]/70 p-4 text-sm text-slate-300">
-                  <div className="font-medium text-white">Check your email</div>
-                  <div className="mt-2 leading-6">
-                    We sent a confirmation link to{" "}
-                    <span className="font-medium text-cyan-300">
-                      {submittedEmail || "your email address"}
-                    </span>
-                    . After you confirm, you will continue into onboarding.
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-amber-400/20 bg-amber-500/10 p-4 text-sm text-amber-200">
-                  If no email arrives, the issue is usually in Supabase Auth settings or SMTP/email template configuration.
-                </div>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAccountCreated(false);
-                      setSuccess(null);
-                      setSubmittedEmail(null);
-                    }}
-                    className="h-12 cursor-pointer rounded-2xl border border-white/10 bg-white/[0.04] px-4 text-sm font-medium text-white transition hover:bg-white/[0.08]"
-                  >
-                    Use a different email
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => router.push(loginHref)}
-                    className="h-12 cursor-pointer rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 px-4 font-semibold text-white shadow-[0_12px_30px_rgba(37,99,235,0.3)] transition duration-200 hover:scale-[1.01] hover:shadow-[0_18px_40px_rgba(37,99,235,0.38)]"
-                  >
-                    Go to login
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                {!initialType && !inviteToken && (
-                  <div className="mb-4 grid grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setAccountType("firm")}
-                      className={`cursor-pointer rounded-2xl border px-4 py-3 text-sm font-medium transition ${
-                        accountType === "firm"
-                          ? "border-cyan-400/40 bg-cyan-400/10 text-cyan-200"
-                          : "border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
-                      }`}
-                    >
-                      Accounting firm
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAccountType("business")}
-                      className={`cursor-pointer rounded-2xl border px-4 py-3 text-sm font-medium transition ${
-                        accountType === "business"
-                          ? "border-cyan-400/40 bg-cyan-400/10 text-cyan-200"
-                          : "border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
-                      }`}
-                    >
-                      Business
-                    </button>
-                  </div>
-                )}
-
+            {!initialType && !inviteToken && (
+              <div className="mb-4 grid grid-cols-2 gap-3">
                 <button
                   type="button"
-                  onClick={handleGoogleSignup}
-                  disabled={loadingGoogle}
-                  className="group mb-4 flex h-12 w-full cursor-pointer items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/[0.045] text-[15px] font-medium text-white transition duration-200 hover:border-white/15 hover:bg-white/[0.08] active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-70"
+                  onClick={() => setAccountType("firm")}
+                  className={`cursor-pointer rounded-2xl border px-4 py-3 text-sm font-medium transition ${
+                    accountType === "firm"
+                      ? "border-cyan-400/40 bg-cyan-400/10 text-cyan-200"
+                      : "border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
+                  }`}
                 >
-                  <GoogleIcon />
-                  <span>
-                    {loadingGoogle
-                      ? "Connecting..."
-                      : inviteToken
-                        ? "Continue with Google to accept invite"
-                        : "Continue with Google"}
-                  </span>
+                  Accounting firm
                 </button>
-
-                <div className="my-6 flex items-center gap-3">
-                  <div className="h-px flex-1 bg-white/10" />
-                  <span className="text-xs uppercase tracking-[0.22em] text-slate-500">Or</span>
-                  <div className="h-px flex-1 bg-white/10" />
-                </div>
-
-                <form onSubmit={handleSignup} className="space-y-4">
-                  <div>
-                    <FieldLabel>{getWorkspaceFieldLabel(accountType)}</FieldLabel>
-                    <input
-                      type="text"
-                      required={requiresWorkspaceName}
-                      value={workspaceName}
-                      onChange={(e) => setWorkspaceName(e.target.value)}
-                      className="h-12 w-full rounded-2xl border border-white/10 bg-[#020617]/90 px-4 text-white outline-none transition duration-200 placeholder:text-slate-500 focus:border-cyan-400/60 focus:bg-[#06101f] focus:shadow-[0_0_0_4px_rgba(34,211,238,0.08)]"
-                      placeholder={getWorkspacePlaceholder(accountType)}
-                      autoComplete="organization"
-                    />
-                  </div>
-
-                  <div>
-                    <FieldLabel>Email</FieldLabel>
-                    <input
-                      type="email"
-                      required
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      className="h-12 w-full rounded-2xl border border-white/10 bg-[#020617]/90 px-4 text-white outline-none transition duration-200 placeholder:text-slate-500 focus:border-cyan-400/60 focus:bg-[#06101f] focus:shadow-[0_0_0_4px_rgba(34,211,238,0.08)]"
-                      placeholder={accountType === "business" ? "you@company.com" : "you@firm.com"}
-                      autoComplete="email"
-                    />
-                  </div>
-
-                  <PasswordField
-                    label="Password"
-                    value={password}
-                    onChange={setPassword}
-                    shown={showPassword}
-                    onToggle={() => setShowPassword((current) => !current)}
-                    placeholder="Create a password"
-                    autoComplete="new-password"
-                  />
-
-                  <PasswordField
-                    label="Confirm password"
-                    value={confirmPassword}
-                    onChange={setConfirmPassword}
-                    shown={showConfirmPassword}
-                    onToggle={() => setShowConfirmPassword((current) => !current)}
-                    placeholder="Confirm your password"
-                    autoComplete="new-password"
-                  />
-
-                  <button
-                    type="submit"
-                    disabled={loading || !canSubmit}
-                    className="mt-2 h-12 w-full cursor-pointer rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 font-semibold text-white shadow-[0_12px_30px_rgba(37,99,235,0.3)] transition duration-200 hover:scale-[1.01] hover:shadow-[0_18px_40px_rgba(37,99,235,0.38)] active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-70"
-                  >
-                    {loading
-                      ? "Creating account..."
-                      : inviteToken
-                        ? "Create account and continue"
-                        : "Create account"}
-                  </button>
-                </form>
-              </>
+                <button
+                  type="button"
+                  onClick={() => setAccountType("business")}
+                  className={`cursor-pointer rounded-2xl border px-4 py-3 text-sm font-medium transition ${
+                    accountType === "business"
+                      ? "border-cyan-400/40 bg-cyan-400/10 text-cyan-200"
+                      : "border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
+                  }`}
+                >
+                  Business
+                </button>
+              </div>
             )}
+
+            <button
+              type="button"
+              onClick={handleGoogleSignup}
+              disabled={loadingGoogle}
+              className="group mb-4 flex h-12 w-full cursor-pointer items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/[0.045] text-[15px] font-medium text-white transition duration-200 hover:border-white/15 hover:bg-white/[0.08] active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              <GoogleIcon />
+              <span>
+                {loadingGoogle
+                  ? "Connecting..."
+                  : inviteToken
+                    ? "Continue with Google to accept invite"
+                    : "Continue with Google"}
+              </span>
+            </button>
+
+            <div className="my-6 flex items-center gap-3">
+              <div className="h-px flex-1 bg-white/10" />
+              <span className="text-xs uppercase tracking-[0.22em] text-slate-500">Or</span>
+              <div className="h-px flex-1 bg-white/10" />
+            </div>
+
+            <form onSubmit={handleSignup} className="space-y-4">
+              <div>
+                <FieldLabel>{getWorkspaceFieldLabel(accountType)}</FieldLabel>
+                <input
+                  type="text"
+                  required={requiresWorkspaceName}
+                  value={workspaceName}
+                  onChange={(e) => setWorkspaceName(e.target.value)}
+                  className="h-12 w-full rounded-2xl border border-white/10 bg-[#020617]/90 px-4 text-white outline-none transition duration-200 placeholder:text-slate-500 focus:border-cyan-400/60 focus:bg-[#06101f] focus:shadow-[0_0_0_4px_rgba(34,211,238,0.08)]"
+                  placeholder={getWorkspacePlaceholder(accountType)}
+                  autoComplete="organization"
+                />
+              </div>
+
+              <div>
+                <FieldLabel>Email</FieldLabel>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="h-12 w-full rounded-2xl border border-white/10 bg-[#020617]/90 px-4 text-white outline-none transition duration-200 placeholder:text-slate-500 focus:border-cyan-400/60 focus:bg-[#06101f] focus:shadow-[0_0_0_4px_rgba(34,211,238,0.08)]"
+                  placeholder={accountType === "business" ? "you@company.com" : "you@firm.com"}
+                  autoComplete="email"
+                />
+              </div>
+
+              <PasswordField
+                label="Password"
+                value={password}
+                onChange={setPassword}
+                shown={showPassword}
+                onToggle={() => setShowPassword((current) => !current)}
+                placeholder="Create a password"
+                autoComplete="new-password"
+              />
+
+              <PasswordField
+                label="Confirm password"
+                value={confirmPassword}
+                onChange={setConfirmPassword}
+                shown={showConfirmPassword}
+                onToggle={() => setShowConfirmPassword((current) => !current)}
+                placeholder="Confirm your password"
+                autoComplete="new-password"
+              />
+
+              <button
+                type="submit"
+                disabled={loading || !canSubmit}
+                className="mt-2 h-12 w-full cursor-pointer rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 font-semibold text-white shadow-[0_12px_30px_rgba(37,99,235,0.3)] transition duration-200 hover:scale-[1.01] hover:shadow-[0_18px_40px_rgba(37,99,235,0.38)] active:scale-[0.995] disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {loading
+                  ? "Creating account..."
+                  : inviteToken
+                    ? "Create account and continue"
+                    : "Create account"}
+              </button>
+            </form>
 
             <div className="mt-6 text-center text-sm text-slate-400">
               Already have an account?{" "}

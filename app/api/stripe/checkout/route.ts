@@ -31,18 +31,48 @@ function getPriceId(accountType: AccountType, plan: PlanKey) {
   return prices.business[plan as keyof typeof prices.business];
 }
 
+function isValidAccountType(value: string): value is AccountType {
+  return value === "firm" || value === "business";
+}
+
+function isValidPlan(value: string): value is PlanKey {
+  return [
+    "starter",
+    "growth",
+    "scale",
+    "core",
+    "operations",
+    "enterprise",
+  ].includes(value);
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
 
-    const firmId = String(body.firmId || "");
-    const email = String(body.email || "");
-    const accountType = String(body.accountType || "") as AccountType;
-    const plan = String(body.plan || "").toLowerCase() as PlanKey;
+    const firmId = String(body.firmId || "").trim();
+    const email = String(body.email || "").trim();
+    const accountTypeRaw = String(body.accountType || "").trim().toLowerCase();
+    const planRaw = String(body.plan || "").trim().toLowerCase();
 
     if (!firmId) {
       return NextResponse.json({ error: "Missing firmId." }, { status: 400 });
     }
+
+    if (!email) {
+      return NextResponse.json({ error: "Missing email." }, { status: 400 });
+    }
+
+    if (!isValidAccountType(accountTypeRaw)) {
+      return NextResponse.json({ error: "Invalid account type." }, { status: 400 });
+    }
+
+    if (!isValidPlan(planRaw)) {
+      return NextResponse.json({ error: "Invalid plan." }, { status: 400 });
+    }
+
+    const accountType = accountTypeRaw as AccountType;
+    const plan = planRaw as PlanKey;
 
     const priceId = getPriceId(accountType, plan);
 
@@ -53,19 +83,43 @@ export async function POST(req: Request) {
       );
     }
 
+    const appUrl = (process.env.NEXT_PUBLIC_APP_URL || "").replace(/\/$/, "");
+
+    if (!appUrl) {
+      return NextResponse.json(
+        { error: "Missing NEXT_PUBLIC_APP_URL." },
+        { status: 500 }
+      );
+    }
+
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      line_items: [{ price: priceId, quantity: 1 }],
-      customer_email: email || undefined,
+      customer_email: email,
       client_reference_id: firmId,
-      success_url: `${process.env.NEXT_PUBLIC_APP_URL}/settings/billing?success=true`,
-      cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/pricing`,
+      line_items: [{ price: priceId, quantity: 1 }],
+      subscription_data: {
+        trial_period_days: 14,
+        metadata: {
+          firmId,
+          accountType,
+          plan,
+        },
+      },
+      metadata: {
+        firmId,
+        accountType,
+        plan,
+      },
+      success_url: `${appUrl}/settings/billing?success=true`,
+      cancel_url: `${appUrl}/settings/billing?canceled=true`,
+      allow_promotion_codes: true,
     });
 
     return NextResponse.json({ url: session.url });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Stripe checkout failed";
+
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
