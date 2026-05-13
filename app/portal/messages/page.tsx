@@ -8,6 +8,7 @@ import {
   MessageSquare,
   Send,
   ShieldCheck,
+  Upload,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 

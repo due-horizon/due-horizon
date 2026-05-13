@@ -83,7 +83,7 @@ export default function PortalLayout({
       }
 
       const clientName = normalizePortalDisplayName(
-        clientMemberships?.[0]?.clients?.client_name ||
+        clientMemberships?.[0]?.clients?.[0]?.client_name ||
         user.user_metadata?.company_name ||
         user.user_metadata?.business_name ||
         null

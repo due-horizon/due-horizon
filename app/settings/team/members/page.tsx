@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -142,7 +142,7 @@ function pickActiveMembership(
   );
 }
 
-export default function TeamMembersPage() {
+function TeamMembersContent() {
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -840,5 +840,20 @@ function SummaryCard({
         <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3 text-white">{icon}</div>
       </div>
     </div>
+  );
+}
+
+
+export default function TeamMembersPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-[#020617] text-sm text-slate-400">
+          Loading team members...
+        </div>
+      }
+    >
+      <TeamMembersContent />
+    </Suspense>
   );
 }
