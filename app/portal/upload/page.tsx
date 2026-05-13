@@ -131,7 +131,7 @@ export default function PortalUploadPage() {
     }
 
     const clientName = normalizePortalDisplayName(
-      clientMembership?.clients?.client_name ||
+      clientMembership?.clients?.[0]?.client_name ||
       user.user_metadata?.company_name ||
       user.user_metadata?.business_name ||
       null

@@ -255,7 +255,7 @@ export default function ClientPortalDashboardPage() {
       workspaceId: clientMembership.firm_id as string,
       clientId: clientMembership.client_id as string,
       companyName:
-        clientMembership?.clients?.client_name ||
+        clientMembership?.clients?.[0]?.client_name ||
         user.user_metadata?.company_name ||
         user.user_metadata?.business_name ||
         "Client Portal",
