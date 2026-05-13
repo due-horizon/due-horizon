@@ -304,18 +304,16 @@ await ensureFirmMembership({
       .select("id")
       .single();
 
-    if (firmError || !firm) {
-      throw new Error(firmError?.message || "Failed to create firm");
-    }
+    if (!firmId) {
+  throw new Error("Missing firm ID before ensuring firm membership");
+}
 
-    firmId = firm.id;
-
-    await ensureFirmMembership({
-      supabase,
-      firmId,
-      userId: user.id,
-      role: "owner",
-    });
+await ensureFirmMembership({
+  supabase,
+  firmId,
+  userId: user.id,
+  role: "owner",
+});
   }
 
   if (!pendingInviteToken && firmId) {
