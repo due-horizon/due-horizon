@@ -236,6 +236,17 @@ export async function seedWorkspaceFromOnboarding(
       throwSupabaseError("Existing membership lookup", existingMembershipError);
     }
 
+if (!firmId) {
+  throw new Error("Missing firm ID before ensuring firm membership");
+}
+
+await ensureFirmMembership({
+  supabase,
+  firmId,
+  userId: user.id,
+  role: "owner",
+});
+
     if (!existingMembership) {
       await ensureFirmMembership({
         supabase,
