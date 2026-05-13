@@ -236,24 +236,21 @@ export async function seedWorkspaceFromOnboarding(
       throwSupabaseError("Existing membership lookup", existingMembershipError);
     }
 
-if (!firmId) {
-  throw new Error("Missing firm ID before ensuring firm membership");
+firmId = invite.firm_id;
+
+    if (!existingMembership) {
+     const ensuredFirmId = firmId;
+
+if (!ensuredFirmId) {
+  throw new Error("Missing firm ID");
 }
 
 await ensureFirmMembership({
   supabase,
-  firmId,
+  firmId: ensuredFirmId,
   userId: user.id,
   role: "owner",
 });
-
-    if (!existingMembership) {
-      await ensureFirmMembership({
-        supabase,
-        firmId: invite.firm_id,
-        userId: user.id,
-        role,
-      });
     }
 
     const { error: inviteUpdateError } = await supabase
@@ -304,13 +301,21 @@ await ensureFirmMembership({
       .select("id")
       .single();
 
-    if (!firmId) {
-  throw new Error("Missing firm ID before ensuring firm membership");
+    if (!firm) {
+      throw new Error("Firm creation failed.");
+    }
+
+    firmId = firm.id;
+
+    const ensuredFirmId = firmId;
+
+if (!ensuredFirmId) {
+  throw new Error("Missing firm ID");
 }
 
 await ensureFirmMembership({
   supabase,
-  firmId,
+  firmId: ensuredFirmId,
   userId: user.id,
   role: "owner",
 });
@@ -323,6 +328,10 @@ await ensureFirmMembership({
       userId: user.id,
       role: "owner",
     });
+  }
+
+  if (!firmId) {
+    throw new Error("Missing firm ID after workspace setup.");
   }
 
   const { error: profileError } = await supabase.from("profiles").upsert({
@@ -467,10 +476,6 @@ await ensureFirmMembership({
   if (authUpdateError) {
     throwSupabaseError("Auth user update", authUpdateError);
   }
-
-if (!firmId) {
-  throw new Error("Missing firmId");
-}
 
   return {
     workspaceId: firmId,
