@@ -24,7 +24,7 @@ type NewClientForm = {
   salesTaxEnabled: boolean;
   salesTaxFrequency: SalesTaxFrequency;
   incomeTaxTypes?: IncomeTaxType[];
-  incomeTaxEnabled?: boolean;
+  incomeTaxEnabled: boolean;
   annualReportEnabled: boolean;
   boiEnabled: boolean;
   w21099Enabled: boolean;
