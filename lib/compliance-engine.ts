@@ -35,6 +35,17 @@ export type ExistingFilingLike = {
   source?: string | null;
 };
 
+export type PayrollEvent = {
+  id: string;
+  companyId?: string | null;
+  companyKind?: "client" | "organization" | null;
+  stateCode: string;
+  payDate: string;
+  withholdingAmount: number;
+  quarterKey?: string | null;
+  filerType?: "3_day" | "5_day" | null;
+};
+
 type DueEntry = {
   dueDate: string;
   periodLabel: string;
@@ -170,6 +181,7 @@ function filingAliasKey(value?: string | null) {
     .replace(/\bw-2 filing\b/g, "w2")
     .replace(/\b1099 filing\b/g, "1099")
     .replace(/\bboi filing\b/g, "boi")
+    .replace(/\bnys-1\b/g, "nys1")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
@@ -248,6 +260,9 @@ export function ruleApplies(profile: ComplianceProfile, rule: ComplianceRule) {
     case "tax_1065":
       if (!profile.tax1065Enabled) return false;
       break;
+    case "withholding_threshold":
+      if (!profile.payrollEnabled) return false;
+      break;
     default:
       return false;
   }
@@ -319,9 +334,186 @@ export function getPeriodLabel(frequency: FilingFrequency, dueDate: string) {
   return dueDate;
 }
 
-function getTemplateTasks(templates: WorkflowTemplate[], filingKey: string) {
-  const template = templates.find((item) => item.filing_key === filingKey);
-  return template?.tasks ?? [];
+const DEFAULT_TASKS_BY_ALIAS: Record<string, string[]> = {
+  "sales-tax": [
+    "Review taxable sales and exemptions",
+    "Reconcile sales tax payable to source reports",
+    "Prepare and file sales tax return",
+    "Record payment confirmation",
+  ],
+  "payroll-tax-filing": [
+    "Review payroll registers for the period",
+    "Reconcile payroll tax liabilities",
+    "Prepare payroll tax filing",
+    "Save filing confirmation and payment support",
+  ],
+  "941": [
+    "Review quarterly payroll registers",
+    "Reconcile Form 941 wages and taxes",
+    "Prepare Form 941",
+    "Save filing confirmation",
+  ],
+  "940": [
+    "Review annual FUTA wages",
+    "Reconcile FUTA liability",
+    "Prepare Form 940",
+    "Save filing confirmation",
+  ],
+  "annual-report": [
+    "Verify entity information",
+    "Prepare annual report filing",
+    "Submit report to the state",
+    "Save confirmation receipt",
+  ],
+  "biennial-statement": [
+    "Verify entity information",
+    "Prepare biennial statement",
+    "Submit statement to the state",
+    "Save confirmation receipt",
+  ],
+  "1120": [
+    "Review corporate trial balance",
+    "Prepare federal corporate return",
+    "Review tax due or refund",
+    "Save filed return and confirmation",
+  ],
+  "1120s": [
+    "Review S corporation books",
+    "Prepare Form 1120-S",
+    "Prepare shareholder K-1s",
+    "Save filed return and confirmations",
+  ],
+  "1065": [
+    "Review partnership books",
+    "Prepare Form 1065",
+    "Prepare partner K-1s",
+    "Save filed return and confirmations",
+  ],
+  "1040": [
+    "Collect taxpayer source documents",
+    "Prepare individual return",
+    "Review tax due or refund",
+    "Save filed return and confirmation",
+  ],
+  "1099": [
+    "Review vendor payment report",
+    "Validate W-9 information",
+    "Prepare 1099 forms",
+    "Save filing confirmation",
+  ],
+  "w2": [
+    "Review year-end payroll totals",
+    "Prepare W-2 forms",
+    "Submit W-2 filing",
+    "Save filing confirmation",
+  ],
+  "boi": [
+    "Review reporting company status",
+    "Collect beneficial owner information",
+    "Prepare BOI report",
+    "Save submission confirmation",
+  ],
+  "nys1": [
+    "Review NY withholding threshold trigger",
+    "Confirm payroll date and withholding amount",
+    "Submit NYS-1 payment",
+    "Save payment confirmation",
+  ],
+};
+
+function compactKey(value?: string | null) {
+  return normalizeText(value)
+    .replace(/form\s*/g, "")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function templateCandidateKeys(template: WorkflowTemplate) {
+  const rawTemplate = template as unknown as Record<string, unknown>;
+  const possibleValues = [
+    template.filing_key,
+    rawTemplate.filingKey,
+    rawTemplate.key,
+    rawTemplate.template_key,
+    rawTemplate.templateKey,
+    rawTemplate.filing_name,
+    rawTemplate.filingName,
+    rawTemplate.name,
+    rawTemplate.title,
+    rawTemplate.titleSuggestion,
+    rawTemplate.type,
+  ];
+
+  const keys = new Set<string>();
+
+  for (const value of possibleValues) {
+    if (typeof value !== "string" || !value.trim()) continue;
+    keys.add(filingAliasKey(value));
+    keys.add(compactKey(value));
+  }
+
+  return keys;
+}
+
+function getDefaultTasksForFiling(filingKey: string, filingName?: string | null) {
+  const candidates = [filingAliasKey(filingKey), filingAliasKey(filingName), compactKey(filingKey), compactKey(filingName)];
+
+  for (const candidate of candidates) {
+    if (candidate && DEFAULT_TASKS_BY_ALIAS[candidate]) {
+      return DEFAULT_TASKS_BY_ALIAS[candidate];
+    }
+  }
+
+  const combined = `${filingKey} ${filingName || ""}`.toLowerCase();
+
+  if (combined.includes("sales") && combined.includes("tax")) return DEFAULT_TASKS_BY_ALIAS["sales-tax"];
+  if (combined.includes("941")) return DEFAULT_TASKS_BY_ALIAS["941"];
+  if (combined.includes("940")) return DEFAULT_TASKS_BY_ALIAS["940"];
+  if (combined.includes("1120s") || combined.includes("1120-s")) return DEFAULT_TASKS_BY_ALIAS["1120s"];
+  if (combined.includes("1120")) return DEFAULT_TASKS_BY_ALIAS["1120"];
+  if (combined.includes("1065")) return DEFAULT_TASKS_BY_ALIAS["1065"];
+  if (combined.includes("1040")) return DEFAULT_TASKS_BY_ALIAS["1040"];
+  if (combined.includes("1099")) return DEFAULT_TASKS_BY_ALIAS["1099"];
+  if (combined.includes("w-2") || combined.includes("w2")) return DEFAULT_TASKS_BY_ALIAS["w2"];
+  if (combined.includes("boi") || combined.includes("beneficial ownership")) return DEFAULT_TASKS_BY_ALIAS["boi"];
+  if (combined.includes("nys-1") || combined.includes("nys1")) return DEFAULT_TASKS_BY_ALIAS["nys1"];
+  if (combined.includes("annual report")) return DEFAULT_TASKS_BY_ALIAS["annual-report"];
+  if (combined.includes("biennial")) return DEFAULT_TASKS_BY_ALIAS["biennial-statement"];
+  if (combined.includes("payroll")) return DEFAULT_TASKS_BY_ALIAS["payroll-tax-filing"];
+
+  return [];
+}
+
+function getTemplateTasks(templates: WorkflowTemplate[], filingKey: string, filingName?: string | null) {
+  const ruleKeys = new Set([
+    filingAliasKey(filingKey),
+    filingAliasKey(filingName),
+    compactKey(filingKey),
+    compactKey(filingName),
+  ].filter(Boolean));
+
+  const directMatch = templates.find((template) => {
+    const candidateKeys = templateCandidateKeys(template);
+    return Array.from(ruleKeys).some((key) => candidateKeys.has(key));
+  });
+
+  if (directMatch?.tasks?.length) {
+    return directMatch.tasks;
+  }
+
+  const fuzzyMatch = templates.find((template) => {
+    const candidateKeys = Array.from(templateCandidateKeys(template));
+    return Array.from(ruleKeys).some((ruleKey) =>
+      candidateKeys.some((candidateKey) =>
+        Boolean(ruleKey && candidateKey && (ruleKey.includes(candidateKey) || candidateKey.includes(ruleKey)))
+      )
+    );
+  });
+
+  if (fuzzyMatch?.tasks?.length) {
+    return fuzzyMatch.tasks;
+  }
+
+  return getDefaultTasksForFiling(filingKey, filingName);
 }
 
 function uniqueFilings(filings: SuggestedFiling[]) {
@@ -420,6 +612,10 @@ function getNyQuarterlySalesTaxEntries(): DueEntry[] {
 }
 
 function getDueEntries(rule: ComplianceRule): DueEntry[] {
+  if (rule.engine_type === "event") {
+    return [];
+  }
+
   if (isNySalesTaxQuarterlyRule(rule)) {
     return getNyQuarterlySalesTaxEntries();
   }
@@ -428,9 +624,142 @@ function getDueEntries(rule: ComplianceRule): DueEntry[] {
   return [
     {
       dueDate,
-      periodLabel: getPeriodLabel(rule.frequency, dueDate),
+      periodLabel: getPeriodLabel(rule.frequency || "one_time", dueDate),
     },
   ];
+}
+
+function addBusinessDays(startIso: string, businessDays: number) {
+  const date = new Date(`${startIso}T00:00:00`);
+  let added = 0;
+
+  while (added < businessDays) {
+    date.setDate(date.getDate() + 1);
+    const day = date.getDay();
+    if (day !== 0 && day !== 6) {
+      added += 1;
+    }
+  }
+
+  return toISODate(date);
+}
+
+function deriveQuarterKey(payDateIso: string) {
+  const date = new Date(`${payDateIso}T00:00:00`);
+  return `${date.getFullYear()}-Q${quarterFromMonth(date.getMonth())}`;
+}
+
+function groupByQuarter(events: PayrollEvent[]) {
+  return events.reduce<Record<string, PayrollEvent[]>>((acc, event) => {
+    const key = event.quarterKey || deriveQuarterKey(event.payDate);
+    acc[key] ??= [];
+    acc[key].push(event);
+    return acc;
+  }, {});
+}
+
+function getWeekRange(payDateIso: string) {
+  const date = new Date(`${payDateIso}T00:00:00`);
+  const start = new Date(date);
+  start.setDate(date.getDate() - date.getDay());
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return { start, end };
+}
+
+function getEventsInSameWeek(events: PayrollEvent[], payDateIso: string) {
+  const { start, end } = getWeekRange(payDateIso);
+
+  return events.filter((event) => {
+    const eventDate = new Date(`${event.payDate}T00:00:00`);
+    return eventDate >= start && eventDate <= end;
+  });
+}
+
+export function buildEventTriggeredFilings(args: {
+  profile: ComplianceProfile;
+  rules?: ComplianceRule[];
+  templates?: WorkflowTemplate[];
+  existingFilings?: ExistingFilingLike[];
+  payrollEvents?: PayrollEvent[];
+}): SuggestedFiling[] {
+  const {
+    profile,
+    rules = defaultComplianceRules,
+    templates = defaultWorkflowTemplates,
+    existingFilings = [],
+    payrollEvents = [],
+  } = args;
+
+  const eventRules = rules.filter(
+    (rule) => rule.engine_type === "event" && ruleApplies(profile, rule),
+  );
+
+  const filings: SuggestedFiling[] = [];
+
+  for (const rule of eventRules) {
+    if (rule.filing_key !== "nys_1") continue;
+
+    const nyEvents = payrollEvents
+      .filter((event) => normalizeStateCode(event.stateCode) === "NY")
+      .sort((a, b) => a.payDate.localeCompare(b.payDate));
+
+    const byQuarter = groupByQuarter(nyEvents);
+
+    for (const [quarterKey, quarterEvents] of Object.entries(byQuarter)) {
+      let runningWithholding = 0;
+
+      for (let index = 0; index < quarterEvents.length; index += 1) {
+        const currentEvent = quarterEvents[index];
+        runningWithholding += coerceNumber(currentEvent.withholdingAmount, 0);
+
+        const thresholdAmount = coerceNumber(
+          rule.event_trigger_config?.threshold_amount,
+          700,
+        );
+
+        if (runningWithholding < thresholdAmount) {
+          continue;
+        }
+
+        const weekEvents = getEventsInSameWeek(quarterEvents, currentEvent.payDate).sort((a, b) =>
+          a.payDate.localeCompare(b.payDate),
+        );
+
+        const lastPayrollInWeek = weekEvents[weekEvents.length - 1] || currentEvent;
+        const filerType = lastPayrollInWeek.filerType || "5_day";
+        const businessDayOffset =
+          filerType === "3_day"
+            ? 3
+            : coerceNumber(rule.event_trigger_config?.default_business_day_offset, 5);
+
+        const dueDate = addBusinessDays(lastPayrollInWeek.payDate, businessDayOffset);
+
+        filings.push({
+          filingKey: `nys_1_${quarterKey}_${dueDate}`,
+          filingName: rule.filing_name,
+          jurisdictionCode: normalizeStateCode(rule.jurisdiction_code),
+          frequency: "one_time",
+          dueDate,
+          periodLabel: quarterKey,
+          tasks: getTemplateTasks(templates, rule.filing_key, rule.filing_name),
+          priority: rule.priority ?? 100,
+          category: rule.category,
+        });
+
+        break;
+      }
+    }
+  }
+
+  const deduped = uniqueFilings(filings);
+  const withoutExisting = excludeExistingConfiguredFilings(deduped, existingFilings);
+
+  return withoutExisting.sort((a, b) => {
+    if (a.dueDate !== b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return a.filingName.localeCompare(b.filingName);
+  });
 }
 
 export function buildSuggestedFilings(args: {
@@ -447,6 +776,7 @@ export function buildSuggestedFilings(args: {
   } = args;
 
   const filings = rules
+    .filter((rule) => rule.engine_type !== "event")
     .filter((rule) => ruleApplies(profile, rule))
     .flatMap((rule) => {
       const dueEntries = getDueEntries(rule);
@@ -458,10 +788,10 @@ export function buildSuggestedFilings(args: {
             : rule.filing_key,
         filingName: rule.filing_name,
         jurisdictionCode: normalizeStateCode(rule.jurisdiction_code),
-        frequency: rule.frequency,
+        frequency: rule.frequency || "one_time",
         dueDate: entry.dueDate,
         periodLabel: entry.periodLabel,
-        tasks: getTemplateTasks(templates, rule.filing_key),
+        tasks: getTemplateTasks(templates, rule.filing_key, rule.filing_name),
         priority: (rule.priority ?? 100) + index,
         category: rule.category,
       } satisfies SuggestedFiling));
@@ -471,6 +801,24 @@ export function buildSuggestedFilings(args: {
   const withoutExisting = excludeExistingConfiguredFilings(deduped, existingFilings);
 
   return withoutExisting.sort((a, b) => {
+    if (a.dueDate !== b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return a.filingName.localeCompare(b.filingName);
+  });
+}
+
+export function buildAllSuggestedFilings(args: {
+  profile: ComplianceProfile;
+  rules?: ComplianceRule[];
+  templates?: WorkflowTemplate[];
+  existingFilings?: ExistingFilingLike[];
+  payrollEvents?: PayrollEvent[];
+}): SuggestedFiling[] {
+  const scheduled = buildSuggestedFilings(args);
+  const eventTriggered = buildEventTriggeredFilings(args);
+
+  const combined = uniqueFilings([...scheduled, ...eventTriggered]);
+  return combined.sort((a, b) => {
     if (a.dueDate !== b.dueDate) return a.dueDate.localeCompare(b.dueDate);
     if (a.priority !== b.priority) return a.priority - b.priority;
     return a.filingName.localeCompare(b.filingName);

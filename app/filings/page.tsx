@@ -11,7 +11,9 @@ import {
 } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddFilingModal from "./AddFilingModal";
-import { buildSuggestedFilings } from "@/lib/compliance-engine";
+import AddClientModal from "./AddClientModal";
+import InviteClientToPortalModal from "./InviteClientToPortalModal";
+import { buildAllSuggestedFilings } from "@/lib/compliance-engine";
 
 import type {
   SuggestedFiling,
@@ -38,6 +40,7 @@ type FilingTemplateKey =
   | "Corporate Tax Return"
   | "Partnership Return"
   | "S Corp Return"
+  | "NYS-1"
   | "BOI Filing"
   | "1099 Filing"
   | "W-2 Filing";
@@ -59,6 +62,7 @@ type Filing = {
   type: string;
   templateKey?: FilingTemplateKey;
   assignee?: string;
+  assigneeUserId?: string | null;
   tasks: Task[];
   clientId?: string | null;
   organizationId?: string | null;
@@ -67,11 +71,25 @@ type Filing = {
 type NewFilingForm = {
   title: string;
   company: string;
+  companyId: string;
   state: string;
   dueDate: string;
   type: string;
   templateKey: FilingTemplateKey | "";
   assignee: string;
+};
+
+type NewClientForm = {
+  name: string;
+  state: string;
+  entityType: "sole_prop" | "single_member_llc" | "partnership" | "llc" | "s_corp" | "c_corp" | "nonprofit" | "other" | "";
+  payrollEnabled: boolean;
+  salesTaxEnabled: boolean;
+  salesTaxFrequency: "monthly" | "quarterly" | "annual" | "";
+  incomeTaxEnabled: boolean;
+  annualReportEnabled: boolean;
+  boiEnabled: boolean;
+  w21099Enabled: boolean;
 };
 
 type CompanyOption = {
@@ -100,7 +118,56 @@ type ToastMessage = {
 
 type WorkspaceType = "accounting_firm" | "business_owner" | "unknown";
 
-const assignees = ["Unassigned", "Rob", "Staff 1", "Staff 2"];
+type TeamMember = {
+  id: string;
+  name: string;
+  email?: string;
+  role?: string;
+};
+
+const ASSIGNEE_UNASSIGNED_VALUE = "unassigned";
+const ASSIGNEE_UNASSIGNED_LABEL = "Unassigned";
+
+function getUserDisplayName(user: any) {
+  return (
+    user?.user_metadata?.full_name ||
+    user?.user_metadata?.name ||
+    user?.user_metadata?.display_name ||
+    user?.email ||
+    "You"
+  );
+}
+
+function getTeamMemberLabel(teamMembers: TeamMember[], userId?: string | null) {
+  if (!userId) return ASSIGNEE_UNASSIGNED_LABEL;
+  return teamMembers.find((member) => member.id === userId)?.name || ASSIGNEE_UNASSIGNED_LABEL;
+}
+
+function normalizeAssigneeValue(value: string | null | undefined, teamMembers: TeamMember[]) {
+  if (!value || value === ASSIGNEE_UNASSIGNED_VALUE || value === ASSIGNEE_UNASSIGNED_LABEL) return null;
+  if (teamMembers.some((member) => member.id === value)) return value;
+  const matchedByName = teamMembers.find((member) => member.name.toLowerCase() === String(value).toLowerCase());
+  return matchedByName?.id || null;
+}
+
+function planIncludesBulkWorkflows(workspaceType: WorkspaceType, plan: string) {
+  const normalizedPlan = (plan || "").toLowerCase();
+
+  if (workspaceType === "accounting_firm") {
+    return normalizedPlan === "growth" || normalizedPlan === "scale";
+  }
+
+  if (workspaceType === "business_owner") {
+    return normalizedPlan === "operations" || normalizedPlan === "enterprise";
+  }
+
+  return false;
+}
+
+function getBulkWorkflowUpgradePlan(workspaceType: WorkspaceType) {
+  return workspaceType === "business_owner" ? "Operations" : "Growth";
+}
+
 
 const filingTemplates: Record<
   FilingTemplateKey,
@@ -262,6 +329,18 @@ const filingTemplates: Record<
       "Save acceptance",
     ],
   },
+  "NYS-1": {
+    titleSuggestion: "NYS-1",
+    type: "NYS-1",
+    tasks: [
+      "Pull payroll register",
+      "Review NY withholding liability",
+      "Confirm deposit frequency",
+      "Prepare NYS-1",
+      "Submit payment/filing",
+      "Save confirmation",
+    ],
+  },
   "BOI Filing": {
     titleSuggestion: "BOI Filing",
     type: "BOI Filing",
@@ -300,36 +379,70 @@ const filingTemplates: Record<
 };
 
 function getTemplateKeyForFilingName(name: string, type?: string): FilingTemplateKey | "" {
-  const normalized = `${name || ""} ${type || ""}`.toLowerCase();
+  const normalized = `${name || ""} ${type || ""}`
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  if (normalized.includes("sales tax")) return "Sales Tax Filing";
+  if (normalized.includes("sales tax") || normalized.includes("sales use tax")) return "Sales Tax Filing";
   if (normalized.includes("payroll")) return "Payroll Tax Filing";
-  if (normalized.includes("form 941") || normalized.includes("941")) return "Form 941";
-  if (normalized.includes("form 940") || normalized.includes("940")) return "Form 940";
+  if (normalized.includes("form 941") || /941/.test(normalized)) return "Form 941";
+  if (normalized.includes("form 940") || /940/.test(normalized)) return "Form 940";
   if (normalized.includes("annual report")) return "Annual Report";
   if (normalized.includes("biennial")) return "Biennial Statement";
   if (normalized.includes("franchise tax")) return "Franchise Tax";
   if (normalized.includes("business license")) return "Business License Renewal";
   if (normalized.includes("estimated tax")) return "Estimated Tax Payment";
-  if (normalized.includes("personal tax") || normalized.includes("1040")) return "Personal Tax Return";
-  if (normalized.includes("corporate tax") || (normalized.includes("1120") && !normalized.includes("1120s"))) return "Corporate Tax Return";
-  if (normalized.includes("partnership") || normalized.includes("1065")) return "Partnership Return";
-  if (normalized.includes("s corp") || normalized.includes("1120s")) return "S Corp Return";
+  if (normalized.includes("personal tax") || /1040/.test(normalized)) return "Personal Tax Return";
+  if (normalized.includes("corporate tax") || (/1120/.test(normalized) && !normalized.includes("1120s"))) return "Corporate Tax Return";
+  if (normalized.includes("partnership") || /1065/.test(normalized)) return "Partnership Return";
+  if (normalized.includes("s corp") || normalized.includes("1120s") || normalized.includes("1120 s")) return "S Corp Return";
+  if (normalized.includes("nys 1") || normalized.includes("nys1")) return "NYS-1";
   if (normalized.includes("boi")) return "BOI Filing";
   if (normalized.includes("1099")) return "1099 Filing";
-  if (normalized.includes("w-2") || normalized.includes("w2")) return "W-2 Filing";
+  if (normalized.includes("w 2") || normalized.includes("w2")) return "W-2 Filing";
 
   return "";
+}
+
+function getSuggestionSelectionKey(suggestion: SuggestedFiling) {
+  return `${suggestion.filingKey}|${suggestion.dueDate}|${suggestion.jurisdictionCode}`;
+}
+
+function resolveTemplateKeyForSuggestion(suggestion: SuggestedFiling): FilingTemplateKey | "" {
+  return (
+    getTemplateKeyForFilingName(suggestion.filingName, suggestion.filingKey) ||
+    getTemplateKeyForFilingName(suggestion.filingKey, suggestion.category || suggestion.frequency) ||
+    ""
+  );
+}
+
+function getFallbackTasksForSuggestion(suggestion: SuggestedFiling) {
+  const templateKey = resolveTemplateKeyForSuggestion(suggestion);
+  return templateKey ? filingTemplates[templateKey].tasks : [];
+}
+
+function hydrateSuggestionTasks(suggestion: SuggestedFiling): SuggestedFiling {
+  if (Array.isArray(suggestion.tasks) && suggestion.tasks.length > 0) {
+    return suggestion;
+  }
+
+  return {
+    ...suggestion,
+    tasks: getFallbackTasksForSuggestion(suggestion),
+  };
 }
 
 const emptyForm: NewFilingForm = {
   title: "",
   company: "",
+  companyId: "",
   state: "",
   dueDate: "",
   type: "",
   templateKey: "",
-  assignee: "Unassigned",
+  assignee: ASSIGNEE_UNASSIGNED_LABEL,
 };
 
 function dbToDisplayStatus(dbStatus: string, dueDate: string): FilingStatus {
@@ -408,6 +521,8 @@ function normalizeFilingDisplayName(name: string, stateCode?: string, frequency?
 
   if (!cleaned) return cleaned;
 
+  if (/nys[-\s]?1/i.test(cleaned)) return "NYS-1";
+
   if (/sales\s+tax/i.test(cleaned)) {
     const stateNameMap: Record<string, string> = {
       NY: "New York",
@@ -452,6 +567,7 @@ function normalizeFilingDisplayName(name: string, stateCode?: string, frequency?
 
 function filingCategoryKey(name: string) {
   const normalized = normalizeFilingNameForMatch(name);
+  if (normalized.includes("nys_1") || normalized.includes("nys 1")) return "nys_1";
   if (normalized.includes("sales tax")) return "sales_tax";
   if (normalized.includes("payroll")) return "payroll";
   if (normalized.includes("annual report")) return "annual_report";
@@ -609,6 +725,8 @@ export default function FilingsPage() {
   const [firmId, setFirmId] = useState<string | null>(null);
   const [firmType, setFirmType] = useState<"firm" | "business" | null>(null);
   const [workspaceType, setWorkspaceType] = useState<WorkspaceType>("unknown");
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [workspacePlan, setWorkspacePlan] = useState("");
   const [filings, setFilings] = useState<Filing[]>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"ALL" | FilingStatus>("ALL");
@@ -620,11 +738,28 @@ export default function FilingsPage() {
   const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
   const [activeFilingId, setActiveFilingId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isAddClientModalOpen, setIsAddClientModalOpen] = useState(false);
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState<string>("");
+  const [newClient, setNewClient] = useState<NewClientForm>({
+    name: "",
+    state: "",
+    entityType: "",
+    payrollEnabled: false,
+    salesTaxEnabled: false,
+    salesTaxFrequency: "",
+    incomeTaxEnabled: true,
+    annualReportEnabled: false,
+    boiEnabled: false,
+    w21099Enabled: false,
+  });
+  const [clientModalError, setClientModalError] = useState<string | null>(null);
+  const [isSavingClient, setIsSavingClient] = useState(false);
   const [newFiling, setNewFiling] = useState<NewFilingForm>(emptyForm);
   const [errors, setErrors] = useState<Partial<Record<keyof NewFilingForm, string>>>({});
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
-  const [bulkAssignee, setBulkAssignee] = useState("Unassigned");
+  const [bulkAssignee, setBulkAssignee] = useState(ASSIGNEE_UNASSIGNED_VALUE);
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
   const [bulkStatusAction, setBulkStatusAction] = useState<"MARK_FILED" | "MARK_READY" | "REOPEN">("MARK_FILED");
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -638,9 +773,11 @@ export default function FilingsPage() {
   const [pendingAssigneeIds, setPendingAssigneeIds] = useState<string[]>([]);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [suggestedFilings, setSuggestedFilings] = useState<SuggestedFiling[]>([]);
+  const [hasCheckedSuggestions, setHasCheckedSuggestions] = useState(false);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
   const [selectedSuggestionKeys, setSelectedSuggestionKeys] = useState<string[]>([]);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [expandedCompanies, setExpandedCompanies] = useState<Record<string, boolean>>({});
 
   const listRef = useRef<HTMLDivElement | null>(null);
 
@@ -652,12 +789,20 @@ export default function FilingsPage() {
     }, 2800);
   }
 
-  function applyStoredAssignees(rows: Filing[], targetFirmId: string | null) {
+  function applyStoredAssignees(rows: Filing[], targetFirmId: string | null, members: TeamMember[]) {
     const stored = readStoredAssignees(targetFirmId);
-    return rows.map((row) => ({
-      ...row,
-      assignee: stored[row.id] || row.assignee || "Unassigned",
-    }));
+
+    return rows.map((row) => {
+      const storedAssigneeUserId = normalizeAssigneeValue(stored[row.id], members);
+      const rowAssigneeUserId = normalizeAssigneeValue(row.assigneeUserId, members);
+      const assigneeUserId = storedAssigneeUserId ?? rowAssigneeUserId;
+
+      return {
+        ...row,
+        assigneeUserId,
+        assignee: getTeamMemberLabel(members, assigneeUserId),
+      };
+    });
   }
 
   function persistAssigneeForRows(updates: Record<string, string>) {
@@ -666,12 +811,62 @@ export default function FilingsPage() {
     writeStoredAssignees(firmId, next);
   }
 
+  const portalInviteClients = useMemo(
+    () =>
+      companyOptions
+        .filter((option) => option.kind === "client")
+        .map((option) => ({
+          id: option.id,
+          client_name: option.name,
+        })),
+    [companyOptions]
+  );
+
+  function openInviteModal() {
+    if (!firmId) {
+      showToast("error", "No workspace found", "Refresh and try again.");
+      return;
+    }
+
+    if (!portalInviteClients.length) {
+      showToast("info", "No clients available", "Add a client first, then invite them to the portal.");
+      return;
+    }
+
+    setIsInviteModalOpen(true);
+  }
+
+  function closeInviteModal() {
+    setIsInviteModalOpen(false);
+  }
+
   const companies = useMemo(
     () => ["ALL", ...Array.from(new Set(filings.map((f) => f.company)))],
     [filings]
   );
 
-  const assigneeOptions = useMemo(() => ["ALL", ...assignees], []);
+  const assigneeLabelMap = useMemo(() => {
+    const labels: Record<string, string> = {
+      ALL: "All Assignees",
+      [ASSIGNEE_UNASSIGNED_VALUE]: ASSIGNEE_UNASSIGNED_LABEL,
+    };
+
+    for (const member of teamMembers) {
+      labels[member.id] = member.name;
+    }
+
+    return labels;
+  }, [teamMembers]);
+
+  const assignableTeamMemberOptions = useMemo(
+    () => [ASSIGNEE_UNASSIGNED_VALUE, ...teamMembers.map((member) => member.id)],
+    [teamMembers]
+  );
+
+  const assigneeOptions = useMemo(() => ["ALL", ...assignableTeamMemberOptions], [assignableTeamMemberOptions]);
+
+  const canUseBulkWorkflows = planIncludesBulkWorkflows(workspaceType, workspacePlan);
+  const bulkWorkflowUpgradePlan = getBulkWorkflowUpgradePlan(workspaceType);
 
   const counts = useMemo(
     () => ({
@@ -691,7 +886,7 @@ export default function FilingsPage() {
     if (statusFilter !== "ALL") rows = rows.filter((f) => f.status === statusFilter);
     if (companyFilter !== "ALL") rows = rows.filter((f) => f.company === companyFilter);
     if (assigneeFilter !== "ALL") {
-      rows = rows.filter((f) => (f.assignee ?? "Unassigned") === assigneeFilter);
+      rows = rows.filter((f) => (f.assigneeUserId ?? ASSIGNEE_UNASSIGNED_VALUE) === assigneeFilter);
     }
 
     if (search.trim()) {
@@ -702,7 +897,7 @@ export default function FilingsPage() {
           f.company.toLowerCase().includes(q) ||
           f.state.toLowerCase().includes(q) ||
           f.type.toLowerCase().includes(q) ||
-          (f.assignee ?? "Unassigned").toLowerCase().includes(q)
+          (f.assignee ?? ASSIGNEE_UNASSIGNED_LABEL).toLowerCase().includes(q)
       );
     }
 
@@ -715,7 +910,7 @@ export default function FilingsPage() {
         case "companyAsc":
           return a.company.localeCompare(b.company);
         case "assigneeAsc":
-          return (a.assignee ?? "Unassigned").localeCompare(b.assignee ?? "Unassigned");
+          return (a.assignee ?? ASSIGNEE_UNASSIGNED_LABEL).localeCompare(b.assignee ?? ASSIGNEE_UNASSIGNED_LABEL);
         case "status":
           return getStatusRank(a.status) - getStatusRank(b.status);
         default:
@@ -725,6 +920,38 @@ export default function FilingsPage() {
 
     return rows;
   }, [filings, search, statusFilter, companyFilter, assigneeFilter, sortBy]);
+
+  const groupedFilings = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        company: string;
+        rows: Filing[];
+      }
+    >();
+
+    for (const row of filteredFilings) {
+      const key = row.company || "Unknown";
+      const current = groups.get(key) || { company: key, rows: [] };
+      current.rows.push(row);
+      groups.set(key, current);
+    }
+
+    return Array.from(groups.values()).map((group) => {
+      const overdue = group.rows.filter((row) => row.status === "OVERDUE").length;
+      const dueSoon = group.rows.filter((row) => row.status === "DUE SOON").length;
+      const ready = group.rows.filter((row) => row.status === "READY TO FILE").length;
+      const nextFiling = [...group.rows].sort((a, b) => a.dueDate.localeCompare(b.dueDate))[0] || null;
+
+      return {
+        ...group,
+        overdue,
+        dueSoon,
+        ready,
+        nextFiling,
+      };
+    });
+  }, [filteredFilings]);
 
   const selectedCount = selectedIds.length;
 
@@ -776,6 +1003,102 @@ export default function FilingsPage() {
     return memberships?.[0]?.firm_id ?? null;
   }
 
+  async function loadTeamMembers(workspaceId: string, currentUser: any) {
+    const normalizeRole = (row: any) =>
+      String(row?.member_role || row?.role || row?.workspace_role || "member").toLowerCase();
+
+    let membershipRows: any[] = [];
+
+    const { data: workspaceMembers, error: workspaceMembersError } = await supabase
+      .from("workspace_members")
+      .select("*")
+      .eq("workspace_id", workspaceId);
+
+    if (!workspaceMembersError && workspaceMembers?.length) {
+      membershipRows = workspaceMembers;
+    } else {
+      const { data: firmMembers, error: firmMembersError } = await supabase
+        .from("firm_members")
+        .select("*")
+        .eq("firm_id", workspaceId);
+
+      if (!firmMembersError && firmMembers?.length) {
+        membershipRows = firmMembers;
+      }
+    }
+
+    const userIds = Array.from(
+      new Set(
+        membershipRows
+          .map((row) => String(row.user_id || row.member_id || row.profile_id || ""))
+          .filter(Boolean)
+      )
+    );
+
+    let profileRows: any[] = [];
+
+    if (userIds.length > 0) {
+      const { data: profiles, error: profilesError } = await supabase
+        .from("profiles")
+        .select("*")
+        .in("id", userIds);
+
+      if (!profilesError && profiles?.length) {
+        profileRows = profiles;
+      }
+    }
+
+    const profileMap = new Map(profileRows.map((profile) => [String(profile.id), profile]));
+
+    const members = membershipRows
+      .map((row) => {
+        const id = String(row.user_id || row.member_id || row.profile_id || "");
+        if (!id) return null;
+
+        const profile = profileMap.get(id) || {};
+        const email =
+          profile.email ||
+          row.email ||
+          row.invited_email ||
+          row.member_email ||
+          row.invite_email ||
+          "";
+        const name =
+          profile.full_name ||
+          profile.name ||
+          profile.display_name ||
+          row.full_name ||
+          row.name ||
+          row.display_name ||
+          email ||
+          (id === currentUser?.id ? getUserDisplayName(currentUser) : "Team Member");
+
+        return {
+          id,
+          name: String(name),
+          email: email ? String(email) : undefined,
+          role: normalizeRole(row),
+        } as TeamMember;
+      })
+      .filter(Boolean) as TeamMember[];
+
+    if (currentUser?.id && !members.some((member) => member.id === currentUser.id)) {
+      members.unshift({
+        id: currentUser.id,
+        name: getUserDisplayName(currentUser),
+        email: currentUser.email,
+        role: "owner",
+      });
+    }
+
+    return members.sort((a, b) => {
+      if (a.id === currentUser?.id) return -1;
+      if (b.id === currentUser?.id) return 1;
+      const roleRank: Record<string, number> = { owner: 1, admin: 2, member: 3 };
+      return (roleRank[a.role || "member"] || 4) - (roleRank[b.role || "member"] || 4) || a.name.localeCompare(b.name);
+    });
+  }
+
   async function loadData(options?: { silent?: boolean }) {
     if (options?.silent) {
       setIsRefreshing(true);
@@ -788,11 +1111,14 @@ export default function FilingsPage() {
     } = await supabase.auth.getUser();
 
     if (!user) {
+      setCurrentUserId("");
       setFilings([]);
       setLoading(false);
       setIsRefreshing(false);
       return;
     }
+
+    setCurrentUserId(user.id);
 
     const resolvedFirmId = await resolveFirmId(
       user.id,
@@ -812,6 +1138,9 @@ export default function FilingsPage() {
 
     setFirmId(resolvedFirmId);
 
+    const loadedTeamMembers = await loadTeamMembers(resolvedFirmId, user);
+    setTeamMembers(loadedTeamMembers);
+
     const [
       { data: firm },
       { data: workspace },
@@ -820,7 +1149,7 @@ export default function FilingsPage() {
       { data: filingsData },
       { data: tasksData },
     ] = await Promise.all([
-      supabase.from("firms").select("type, name").eq("id", resolvedFirmId).single(),
+      supabase.from("firms").select("type, name, plan").eq("id", resolvedFirmId).single(),
       supabase.from("workspaces").select("id, name").eq("id", resolvedFirmId).maybeSingle(),
       supabase.from("clients").select("id, client_name, state_code").eq("firm_id", resolvedFirmId),
       supabase.from("organizations").select("id, legal_name, display_name, state_code").eq("firm_id", resolvedFirmId),
@@ -840,6 +1169,7 @@ export default function FilingsPage() {
 
     setFirmType(resolvedWorkspaceType === "business_owner" ? "business" : resolvedWorkspaceType === "accounting_firm" ? "firm" : null);
     setWorkspaceType(resolvedWorkspaceType);
+    setWorkspacePlan(typeof firm?.plan === "string" ? firm.plan : "");
 
     const normalizedOrganizations = (organizations || []).map((o) => ({
       id: o.id,
@@ -892,7 +1222,7 @@ export default function FilingsPage() {
 
     const filingIds = new Set((filingsData || []).map((f: any) => String(f.id)));
     const filingTasksMap = new Map<string, Task[]>();
-    const filingAssigneeMap = new Map<string, string>();
+    const filingAssigneeMap = new Map<string, string | null>();
 
     ((tasksData || []) as DbTask[])
       .filter((task) => task.filing_id && filingIds.has(String(task.filing_id)))
@@ -906,7 +1236,7 @@ export default function FilingsPage() {
         });
         filingTasksMap.set(task.filing_id, arr);
         if (task.assignee_user_id && !filingAssigneeMap.has(task.filing_id)) {
-          filingAssigneeMap.set(task.filing_id, "Rob");
+          filingAssigneeMap.set(task.filing_id, String(task.assignee_user_id));
         }
       });
 
@@ -938,14 +1268,18 @@ export default function FilingsPage() {
         dueDate: f.due_date,
         status: dbToDisplayStatus(f.status, f.due_date),
         type: normalizedType,
-        assignee: filingAssigneeMap.get(String(f.id)) || "Unassigned",
+        assigneeUserId: normalizeAssigneeValue(filingAssigneeMap.get(String(f.id)), loadedTeamMembers),
+        assignee: getTeamMemberLabel(
+          loadedTeamMembers,
+          normalizeAssigneeValue(filingAssigneeMap.get(String(f.id)), loadedTeamMembers)
+        ),
         tasks: filingTasksMap.get(String(f.id)) || [],
         clientId: f.client_id,
         organizationId: f.organization_id,
       };
     });
 
-    setFilings(applyStoredAssignees(rows, resolvedFirmId));
+    setFilings(applyStoredAssignees(rows, resolvedFirmId, loadedTeamMembers));
     setLoading(false);
     setIsRefreshing(false);
   }
@@ -967,6 +1301,28 @@ export default function FilingsPage() {
       setActiveFilingId(filteredFilings[0].id);
     }
   }, [filteredFilings, focusedRowId, activeFilingId]);
+
+  useEffect(() => {
+  if (!groupedFilings.length) {
+    setExpandedCompanies({});
+    return;
+  }
+
+  setExpandedCompanies((prev) => {
+    const next: Record<string, boolean> = {};
+
+    for (const group of groupedFilings) {
+      const shouldOpenGroup =
+        group.overdue > 0 ||
+        group.dueSoon > 0 ||
+        group.rows.some((row) => row.id === activeFilingId);
+
+      next[group.company] = prev[group.company] ?? shouldOpenGroup;
+    }
+
+    return next;
+  });
+}, [groupedFilings, activeFilingId]);
 
 
   useEffect(() => {
@@ -1038,13 +1394,42 @@ export default function FilingsPage() {
     showToast("success", "Filing updated", `Status changed to ${nextStatus}.`);
   }
 
-  async function updateAssignee(id: string, assignee: string) {
+  async function updateAssignee(id: string, assigneeUserId: string) {
+    const previous = filings;
     setPendingAssigneeIds((prev) => [...prev, id]);
-    const normalized = assignee || "Unassigned";
-    setFilings((prev) => prev.map((row) => (row.id === id ? { ...row, assignee: normalized } : row)));
-    persistAssigneeForRows({ [id]: normalized });
+
+    const normalizedUserId = normalizeAssigneeValue(assigneeUserId, teamMembers);
+    const assigneeLabel = getTeamMemberLabel(teamMembers, normalizedUserId);
+
+    setFilings((prev) =>
+      prev.map((row) =>
+        row.id === id
+          ? {
+              ...row,
+              assigneeUserId: normalizedUserId,
+              assignee: assigneeLabel,
+            }
+          : row
+      )
+    );
+
+    persistAssigneeForRows({ [id]: normalizedUserId || ASSIGNEE_UNASSIGNED_VALUE });
+
+    const { error } = await supabase
+      .from("tasks")
+      .update({ assignee_user_id: normalizedUserId })
+      .eq("filing_id", id);
+
+    if (error) {
+      console.error("Failed to update assignee:", error);
+      setFilings(previous);
+      showToast("error", "Couldn’t update assignee", "Your previous assignee was restored.");
+      setPendingAssigneeIds((prev) => prev.filter((item) => item !== id));
+      return;
+    }
+
     setPendingAssigneeIds((prev) => prev.filter((item) => item !== id));
-    showToast("success", "Assignee updated", `${normalized} is now assigned to this filing.`);
+    showToast("success", "Assignee updated", `${assigneeLabel} is now assigned to this filing.`);
   }
 
   async function materializeWorkflowTasks(filing: Filing) {
@@ -1065,7 +1450,7 @@ export default function FilingsPage() {
           filing_id: filing.id,
           title: task,
           status: "todo",
-          assignee_user_id: null,
+          assignee_user_id: filing.assigneeUserId || null,
         }))
       )
       .select("id, filing_id, title, status");
@@ -1209,6 +1594,10 @@ export default function FilingsPage() {
   }
 
   function openStatusModal(action: "MARK_FILED" | "MARK_READY" | "REOPEN") {
+    if (!canUseBulkWorkflows) {
+      showToast("info", "Upgrade required", `Bulk status updates require the ${bulkWorkflowUpgradePlan} plan or higher.`);
+      return;
+    }
     if (!selectedIds.length) return;
     setBulkStatusAction(action);
     setIsStatusModalOpen(true);
@@ -1232,15 +1621,22 @@ export default function FilingsPage() {
     setPendingStatusIds((prev) => [...prev, ...selectedIds]);
     setFilings((prev) => prev.map((row) => (selectedIds.includes(row.id) ? { ...row, status: nextStatus } : row)));
 
-    const { error } = await supabase
-      .from("filings")
-      .update({ status: displayToDbStatus(nextStatus) })
-      .in("id", selectedIds);
+    const response = await fetch("/api/filings/bulk-status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        firmId,
+        filingIds: selectedIds,
+        nextStatus: displayToDbStatus(nextStatus),
+      }),
+    });
 
-    if (error) {
-      console.error("Failed bulk update:", error);
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Failed bulk update:", data);
       setFilings(previous);
-      showToast("error", "Bulk update failed", "No status changes were saved.");
+      showToast("error", "Bulk update failed", data.error || "No status changes were saved.");
       setPendingStatusIds((prev) => prev.filter((id) => !selectedIds.includes(id)));
       return;
     }
@@ -1252,17 +1648,25 @@ export default function FilingsPage() {
   }
 
   function openAssignModal() {
+    if (!canUseBulkWorkflows) {
+      showToast("info", "Upgrade required", `Bulk assign requires the ${bulkWorkflowUpgradePlan} plan or higher.`);
+      return;
+    }
     if (!selectedIds.length) return;
-    setBulkAssignee("Unassigned");
+    setBulkAssignee(ASSIGNEE_UNASSIGNED_VALUE);
     setIsAssignModalOpen(true);
   }
 
   function closeAssignModal() {
     setIsAssignModalOpen(false);
-    setBulkAssignee("Unassigned");
+    setBulkAssignee(ASSIGNEE_UNASSIGNED_VALUE);
   }
 
   function openDeleteModal() {
+    if (!canUseBulkWorkflows) {
+      showToast("info", "Upgrade required", `Bulk delete requires the ${bulkWorkflowUpgradePlan} plan or higher.`);
+      return;
+    }
     if (!selectedIds.length) return;
     setIsDeleteModalOpen(true);
   }
@@ -1276,39 +1680,99 @@ export default function FilingsPage() {
 
     const idsToDelete = [...selectedIds];
 
-    const { error: tasksError } = await supabase.from("tasks").delete().in("filing_id", idsToDelete);
+    try {
+      const response = await fetch("/api/filings/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          firmId,
+          filingIds: idsToDelete,
+        }),
+      });
 
-    if (tasksError) {
-      console.error("Failed to delete related tasks:", tasksError);
-      showToast("error", "Couldn’t delete filings", "Related tasks could not be removed.");
-      return;
+      let data: any = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+
+      if (!response.ok) {
+        console.warn("Bulk delete API failed, falling back to client-side delete:", data);
+
+        const { error: taskDeleteError } = await supabase
+          .from("tasks")
+          .delete()
+          .in("filing_id", idsToDelete);
+
+        if (taskDeleteError) {
+          console.error("Failed to delete filing tasks:", taskDeleteError);
+          showToast("error", "Couldn’t delete filings", taskDeleteError.message || "Task cleanup failed.");
+          return;
+        }
+
+        const { error: filingDeleteError } = await supabase
+          .from("filings")
+          .delete()
+          .in("id", idsToDelete);
+
+        if (filingDeleteError) {
+          console.error("Failed to delete filings:", filingDeleteError);
+          showToast("error", "Couldn’t delete filings", filingDeleteError.message || "No filings were deleted.");
+          return;
+        }
+      }
+
+      setFilings((prev) => prev.filter((row) => !idsToDelete.includes(row.id)));
+      setSelectedIds([]);
+      setActiveFilingId((prev) => (prev && idsToDelete.includes(prev) ? null : prev));
+      setFocusedRowId((prev) => (prev && idsToDelete.includes(prev) ? null : prev));
+      closeDeleteModal();
+      showToast("success", "Filings deleted", `${idsToDelete.length} filing${idsToDelete.length === 1 ? " was" : "s were"} deleted.`);
+    } catch (error) {
+      console.error("Bulk delete failed:", error);
+      showToast("error", "Couldn’t delete filings", "Try again in a moment.");
     }
-
-    const { error: filingsError } = await supabase.from("filings").delete().in("id", idsToDelete);
-
-    if (filingsError) {
-      console.error("Failed to delete filings:", filingsError);
-      showToast("error", "Couldn’t delete filings", "No filings were deleted.");
-      return;
-    }
-
-    setFilings((prev) => prev.filter((row) => !idsToDelete.includes(row.id)));
-    setSelectedIds([]);
-    setActiveFilingId((prev) => (prev && idsToDelete.includes(prev) ? null : prev));
-    setFocusedRowId((prev) => (prev && idsToDelete.includes(prev) ? null : prev));
-    closeDeleteModal();
-    showToast("success", "Filings deleted", `${idsToDelete.length} filing${idsToDelete.length === 1 ? " was" : "s were"} deleted.`);
   }
 
-  function applyBulkAssign() {
+  async function applyBulkAssign() {
     if (!selectedIds.length) return;
 
-    const normalized = bulkAssignee || "Unassigned";
+    const previous = filings;
+    const normalizedUserId = normalizeAssigneeValue(bulkAssignee, teamMembers);
+    const assigneeLabel = getTeamMemberLabel(teamMembers, normalizedUserId);
+
     setPendingAssigneeIds((prev) => [...prev, ...selectedIds]);
-    setFilings((prev) => prev.map((row) => (selectedIds.includes(row.id) ? { ...row, assignee: normalized } : row)));
-    persistAssigneeForRows(Object.fromEntries(selectedIds.map((id) => [id, normalized])));
+    setFilings((prev) =>
+      prev.map((row) =>
+        selectedIds.includes(row.id)
+          ? {
+              ...row,
+              assigneeUserId: normalizedUserId,
+              assignee: assigneeLabel,
+            }
+          : row
+      )
+    );
+    persistAssigneeForRows(
+      Object.fromEntries(selectedIds.map((id) => [id, normalizedUserId || ASSIGNEE_UNASSIGNED_VALUE]))
+    );
+
+    const { error } = await supabase
+      .from("tasks")
+      .update({ assignee_user_id: normalizedUserId })
+      .in("filing_id", selectedIds);
+
+    if (error) {
+      console.error("Failed to bulk assign filings:", error);
+      setFilings(previous);
+      showToast("error", "Bulk assign failed", "Your previous assignees were restored.");
+      setPendingAssigneeIds((prev) => prev.filter((id) => !selectedIds.includes(id)));
+      return;
+    }
+
     setPendingAssigneeIds((prev) => prev.filter((id) => !selectedIds.includes(id)));
-    showToast("success", "Bulk assign complete", `${selectedIds.length} filing${selectedIds.length === 1 ? " now has" : "s now have"} ${normalized}.`);
+    showToast("success", "Bulk assign complete", `${selectedIds.length} filing${selectedIds.length === 1 ? " now has" : "s now have"} ${assigneeLabel}.`);
     closeAssignModal();
   }
 
@@ -1332,7 +1796,7 @@ export default function FilingsPage() {
       row.state,
       row.dueDate,
       row.status,
-      row.assignee ?? "Unassigned",
+      row.assignee ?? ASSIGNEE_UNASSIGNED_LABEL,
       String(row.tasks.filter((task) => task.completed).length),
       String(row.tasks.length),
     ]);
@@ -1353,6 +1817,11 @@ export default function FilingsPage() {
   }
 
   function handleExport() {
+    if (!canUseBulkWorkflows) {
+      showToast("info", "Upgrade required", `Export requires the ${bulkWorkflowUpgradePlan} plan or higher.`);
+      return;
+    }
+
     const rowsToExport = selectedIds.length > 0 ? filings.filter((row) => selectedIds.includes(row.id)) : filteredFilings;
     exportRowsToCsv(rowsToExport);
   }
@@ -1367,6 +1836,7 @@ export default function FilingsPage() {
     setSubmitAttempted(false);
     setErrors({});
     setSuggestedFilings([]);
+    setHasCheckedSuggestions(false);
     setIsLoadingSuggestions(false);
     setSelectedSuggestionKeys([]);
 
@@ -1385,6 +1855,7 @@ export default function FilingsPage() {
     setErrors({});
     setSubmitAttempted(false);
     setSuggestedFilings([]);
+    setHasCheckedSuggestions(false);
     setIsLoadingSuggestions(false);
     setSelectedSuggestionKeys([]);
   }
@@ -1413,19 +1884,23 @@ export default function FilingsPage() {
     }
 
     const companyName = newFiling.company.trim();
-    if (!companyName) {
+    if (!companyName && !newFiling.companyId) {
       setErrors((prev) => ({ ...prev, company: "Choose a company first." }));
       return;
     }
 
-    const companyRecord = companyOptions.find((option) => option.name === companyName);
+    const companyRecord =
+      companyOptions.find((option) => option.id === newFiling.companyId) ||
+      companyOptions.find((option) => option.name === companyName);
+
     if (!companyRecord) {
       setErrors((prev) => ({ ...prev, company: "Choose an existing company from onboarding data." }));
       return;
     }
 
     setIsLoadingSuggestions(true);
-    setSuggestedFilings([]);
+    setHasCheckedSuggestions(false);
+    // Keep existing suggestions visible while refresh is running to avoid flashing "up to date".
     setSelectedSuggestionKeys([]);
 
     const profileQuery =
@@ -1456,6 +1931,7 @@ export default function FilingsPage() {
     if (profileError || !profileRow) {
       console.error(profileError);
       showToast("error", "No compliance profile found", "This company does not have a compliance profile yet.");
+      setHasCheckedSuggestions(true);
       setIsLoadingSuggestions(false);
       return;
     }
@@ -1463,6 +1939,7 @@ export default function FilingsPage() {
     if (rulesError) {
       console.error(rulesError);
       showToast("error", "Couldn’t load compliance rules");
+      setHasCheckedSuggestions(true);
       setIsLoadingSuggestions(false);
       return;
     }
@@ -1470,6 +1947,7 @@ export default function FilingsPage() {
     if (templatesError) {
       console.error(templatesError);
       showToast("error", "Couldn’t load workflow templates");
+      setHasCheckedSuggestions(true);
       setIsLoadingSuggestions(false);
       return;
     }
@@ -1493,30 +1971,35 @@ export default function FilingsPage() {
           : filing.organizationId === companyRecord.id
       )
       .map((filing) => ({
-        filingKey: filing.type || filing.title,
-        filingName: filing.title,
+        filingKey: filingCategoryKey(filing.type || filing.title),
+        filingName: normalizeFilingDisplayName(filing.title, filing.state),
         jurisdictionCode: filing.state,
         dueDate: filing.dueDate,
         status: filing.status,
       }));
 
-    const suggestions = buildSuggestedFilings({
+    const suggestions = buildAllSuggestedFilings({
       profile,
       rules: (rulesRows || []) as ComplianceRule[],
       templates: (templateRows || []) as WorkflowTemplate[],
       existingFilings: existingForCompany,
+      payrollEvents: [],
     });
 
-    const normalizedSuggestions = suggestions.map((suggestion) => ({
-      ...suggestion,
-      filingName: normalizeFilingDisplayName(
-        suggestion.filingName,
-        suggestion.jurisdictionCode,
-        suggestion.frequency
-      ),
-    }));
+    const normalizedSuggestions = suggestions.map((suggestion) => {
+      const hydratedSuggestion = hydrateSuggestionTasks(suggestion);
+      return {
+        ...hydratedSuggestion,
+        filingName: normalizeFilingDisplayName(
+          hydratedSuggestion.filingName,
+          hydratedSuggestion.jurisdictionCode,
+          hydratedSuggestion.frequency
+        ),
+      };
+    });
 
     setSuggestedFilings(normalizedSuggestions);
+    setHasCheckedSuggestions(true);
     setIsLoadingSuggestions(false);
 
     if (!normalizedSuggestions.length) {
@@ -1532,30 +2015,38 @@ export default function FilingsPage() {
   }
 
   function toggleSuggestedFiling(suggestion: SuggestedFiling) {
-    const matchedTemplateKey =
-      (Object.keys(filingTemplates) as FilingTemplateKey[]).find(
-        (key) =>
-          filingTemplates[key].type === suggestion.filingName ||
-          filingTemplates[key].titleSuggestion === suggestion.filingName
-      ) || "";
+    const hydratedSuggestion = hydrateSuggestionTasks(suggestion);
+    const selectionKey = getSuggestionSelectionKey(hydratedSuggestion);
+    const matchedTemplateKey = resolveTemplateKeyForSuggestion(hydratedSuggestion);
+
+    setSuggestedFilings((prev) =>
+      prev.map((item) =>
+        getSuggestionSelectionKey(item) === selectionKey
+          ? {
+              ...item,
+              tasks: hydratedSuggestion.tasks,
+            }
+          : item
+      )
+    );
 
     setSelectedSuggestionKeys((prev) => {
-      const exists = prev.includes(suggestion.filingKey);
-      const nextKeys = exists ? prev.filter((key) => key !== suggestion.filingKey) : [...prev, suggestion.filingKey];
+      const exists = prev.includes(selectionKey);
+      const nextKeys = exists ? prev.filter((key) => key !== selectionKey) : [...prev, selectionKey];
 
       if (!exists) {
         const normalizedSuggestionName = normalizeFilingDisplayName(
-          suggestion.filingName,
-          suggestion.jurisdictionCode,
-          suggestion.frequency
+          hydratedSuggestion.filingName,
+          hydratedSuggestion.jurisdictionCode,
+          hydratedSuggestion.frequency
         );
 
         const nextForm: NewFilingForm = {
           ...newFiling,
           title: normalizedSuggestionName,
           type: normalizedSuggestionName,
-          state: suggestion.jurisdictionCode,
-          dueDate: suggestion.dueDate,
+          state: hydratedSuggestion.jurisdictionCode,
+          dueDate: hydratedSuggestion.dueDate,
           templateKey: matchedTemplateKey as FilingTemplateKey | "",
         };
         setNewFiling(nextForm);
@@ -1598,7 +2089,9 @@ export default function FilingsPage() {
     }
 
     const normalizedCompany = newFiling.company.trim();
-    const companyRecord = companyOptions.find((option) => option.name === normalizedCompany);
+    const companyRecord =
+      companyOptions.find((option) => option.id === newFiling.companyId) ||
+      companyOptions.find((option) => option.name === normalizedCompany);
 
     if (!companyRecord) {
       setErrors((prev) => ({ ...prev, company: "Choose an existing company from onboarding data." }));
@@ -1607,7 +2100,7 @@ export default function FilingsPage() {
     }
 
     if (selectedSuggestionKeys.length > 0) {
-      const selected = suggestedFilings.filter((item) => selectedSuggestionKeys.includes(item.filingKey));
+      const selected = suggestedFilings.filter((item) => selectedSuggestionKeys.includes(getSuggestionSelectionKey(item)));
 
       if (!selected.length) {
         showToast("error", "No suggestions selected", "Choose one or more suggestions first.");
@@ -1660,9 +2153,11 @@ export default function FilingsPage() {
 
         createdIds.push(insertedFiling.id);
 
-        if (suggestion.tasks.length > 0) {
+        const tasksToCreate = hydrateSuggestionTasks(suggestion).tasks;
+
+        if (tasksToCreate.length > 0) {
           const { error: taskError } = await supabase.from("tasks").insert(
-            suggestion.tasks.map((task) => ({
+            tasksToCreate.map((task) => ({
               filing_id: insertedFiling.id,
               title: task,
               status: "todo",
@@ -1673,6 +2168,8 @@ export default function FilingsPage() {
           if (taskError) {
             console.error("Failed to create tasks:", taskError);
           }
+        } else {
+          console.warn("No workflow tasks mapped for suggestion:", suggestion);
         }
       }
 
@@ -1761,6 +2258,10 @@ export default function FilingsPage() {
     setNewFiling((current) => {
       let next: NewFilingForm = { ...current, [field]: value };
 
+      if (field === "company" && value !== current.company) {
+        next = { ...next, companyId: "" };
+      }
+
       if (field === "templateKey" && value) {
         const template = filingTemplates[value as FilingTemplateKey];
         next = {
@@ -1777,38 +2278,257 @@ export default function FilingsPage() {
   }
 
 
+  function openAddClientModal() {
+    setClientModalError(null);
+    setNewClient({
+      name: "",
+      state: "",
+      entityType: "",
+      payrollEnabled: false,
+      salesTaxEnabled: false,
+      salesTaxFrequency: "",
+      incomeTaxEnabled: true,
+      annualReportEnabled: false,
+      boiEnabled: false,
+      w21099Enabled: false,
+    });
+    setIsAddClientModalOpen(true);
+  }
+
+  function closeAddClientModal() {
+    if (isSavingClient) return;
+    setIsAddClientModalOpen(false);
+    setClientModalError(null);
+    setNewClient({
+      name: "",
+      state: "",
+      entityType: "",
+      payrollEnabled: false,
+      salesTaxEnabled: false,
+      salesTaxFrequency: "",
+      incomeTaxEnabled: true,
+      annualReportEnabled: false,
+      boiEnabled: false,
+      w21099Enabled: false,
+    });
+  }
+
+  async function saveNewClient() {
+    const name = newClient.name.trim();
+    const state = newClient.state.trim().toUpperCase();
+    const entityType = newClient.entityType.trim();
+    const salesTaxFrequency = newClient.salesTaxEnabled ? newClient.salesTaxFrequency : "";
+
+    if (!firmId) {
+      setClientModalError("No workspace found. Refresh and try again.");
+      return;
+    }
+
+    if (!name) {
+      setClientModalError(`${workspaceType === "business_owner" ? "Business" : "Client"} name is required.`);
+      return;
+    }
+
+    if (!state || !/^[A-Z]{2}$/.test(state)) {
+      setClientModalError("Use a valid 2-letter state code.");
+      return;
+    }
+
+    if (!entityType) {
+      setClientModalError("Choose an entity type.");
+      return;
+    }
+
+    if (newClient.salesTaxEnabled && !salesTaxFrequency) {
+      setClientModalError("Choose a sales tax frequency.");
+      return;
+    }
+
+    setIsSavingClient(true);
+    setClientModalError(null);
+
+    try {
+      if (workspaceType === "business_owner") {
+        const { data, error } = await supabase
+          .from("organizations")
+          .insert({
+            firm_id: firmId,
+            legal_name: name,
+            display_name: name,
+            state_code: state,
+          })
+          .select("id, legal_name, display_name, state_code")
+          .single();
+
+        if (error || !data) throw new Error(error?.message || "Could not create business.");
+
+        const option = {
+          id: data.id,
+          name: data.display_name || data.legal_name,
+          state: data.state_code || state,
+          kind: "organization" as const,
+        };
+
+        const { error: profileError } = await supabase.from("client_compliance_profiles").upsert(
+          {
+            workspace_id: firmId,
+            organization_id: option.id,
+            client_id: null,
+            state_code: option.state || state,
+            entity_type: entityType,
+            payroll_enabled: newClient.payrollEnabled,
+            sales_tax_enabled: newClient.salesTaxEnabled,
+            sales_tax_frequency: salesTaxFrequency || null,
+            income_tax_enabled: newClient.incomeTaxEnabled,
+            annual_report_enabled: newClient.annualReportEnabled,
+            boi_enabled: newClient.boiEnabled,
+            w2_1099_enabled: newClient.w21099Enabled,
+          },
+          { onConflict: "workspace_id,organization_id" }
+        );
+
+        if (profileError) {
+          throw new Error(profileError.message || "Business created, but compliance profile could not be saved.");
+        }
+
+        setCompanyOptions((prev) => [...prev, option].sort((a, b) => a.name.localeCompare(b.name)));
+        setNewFiling((prev) => ({
+          ...prev,
+          company: option.name,
+          companyId: option.id,
+          state: option.state || prev.state,
+        }));
+        showToast("success", "Business added", `${option.name} is ready to use in filings.`);
+      } else {
+        const { data, error } = await supabase
+          .from("clients")
+          .insert({
+            firm_id: firmId,
+            client_name: name,
+            state_code: state,
+          })
+          .select("id, client_name, state_code")
+          .single();
+
+        if (error || !data) throw new Error(error?.message || "Could not create client.");
+
+        const option = {
+          id: data.id,
+          name: data.client_name,
+          state: data.state_code || state,
+          kind: "client" as const,
+        };
+
+        const { error: profileError } = await supabase.from("client_compliance_profiles").upsert(
+          {
+            workspace_id: firmId,
+            client_id: option.id,
+            organization_id: null,
+            state_code: option.state || state,
+            entity_type: entityType,
+            payroll_enabled: newClient.payrollEnabled,
+            sales_tax_enabled: newClient.salesTaxEnabled,
+            sales_tax_frequency: salesTaxFrequency || null,
+            income_tax_enabled: newClient.incomeTaxEnabled,
+            annual_report_enabled: newClient.annualReportEnabled,
+            boi_enabled: newClient.boiEnabled,
+            w2_1099_enabled: newClient.w21099Enabled,
+          },
+          { onConflict: "workspace_id,client_id" }
+        );
+
+        if (profileError) {
+          throw new Error(profileError.message || "Client created, but compliance profile could not be saved.");
+        }
+
+        setCompanyOptions((prev) => [...prev, option].sort((a, b) => a.name.localeCompare(b.name)));
+        setNewFiling((prev) => ({
+          ...prev,
+          company: option.name,
+          companyId: option.id,
+          state: option.state || prev.state,
+        }));
+        showToast("success", "Client added", `${option.name} is ready to use in filings.`);
+      }
+
+      setIsAddClientModalOpen(false);
+      setNewClient({
+        name: "",
+        state: "",
+        entityType: "",
+        payrollEnabled: false,
+        salesTaxEnabled: false,
+        salesTaxFrequency: "",
+        incomeTaxEnabled: true,
+        annualReportEnabled: false,
+        boiEnabled: false,
+        w21099Enabled: false,
+      });
+    } catch (err) {
+      setClientModalError(err instanceof Error ? err.message : "Could not save the record.");
+    } finally {
+      setIsSavingClient(false);
+    }
+  }
+
+
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.08),transparent_28%),linear-gradient(to_bottom,#07111f,#020617)] text-white">
       <div className="mx-auto max-w-[1650px] px-4 py-6 sm:px-6 sm:py-8">
         <div className="rounded-[30px] border border-cyan-400/10 bg-white/[0.03] p-3 shadow-[0_0_60px_rgba(34,211,238,0.07)] sm:p-4">
           <div className="overflow-hidden rounded-[24px] border border-white/10 bg-[linear-gradient(to_bottom,rgba(11,21,38,0.96),rgba(8,15,28,0.98))] shadow-[0_30px_80px_rgba(0,0,0,0.45)]">
-            <div className="border-b border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.10),transparent_42%)] px-5 py-6 sm:px-6">
-              <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-                <div className="max-w-3xl">
-                  <div className="text-xs font-semibold uppercase tracking-[0.22em] text-cyan-300/75">Filing Operations</div>
-                  <div className="mt-2 text-3xl font-semibold tracking-tight sm:text-4xl">All Filings</div>
-                  <div className="mt-2 text-sm leading-7 text-slate-400">
-                    Work the list from the left, handle the selected filing on the right, and keep the whole team aligned without digging through a giant table. The current page already had deep workflow logic, bulk actions, assignee updates, tasks, and compliance suggestions; this redesign is about making that workflow feel like a product instead of a utility. 
+            <div className="relative overflow-hidden border-b border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.14),transparent_42%),radial-gradient(circle_at_top_right,rgba(59,130,246,0.10),transparent_28%)] px-5 py-6 sm:px-6 sm:py-7">
+              <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-[linear-gradient(to_bottom,rgba(34,211,238,0.04),transparent)]" />
+              <div className="relative flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
+                <div className="max-w-4xl">
+                  <div className="inline-flex items-center gap-2 rounded-full border border-cyan-300/15 bg-cyan-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-cyan-200">
+                    <span className="h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_16px_rgba(34,211,238,0.85)]" />
+                    Filing Operations
+                  </div>
+                  <div className="mt-4 text-3xl font-semibold tracking-tight text-white sm:text-5xl">
+                    Filings Command Center
+                  </div>
+                  <div className="mt-3 max-w-3xl text-base leading-8 text-slate-300">
+                    {counts.OVERDUE} overdue • {counts["DUE SOON"]} due soon • {counts["READY TO FILE"]} ready to file across {groupedFilings.length} {groupedFilings.length === 1 ? "client" : "clients"}.
+                  </div>
+                  <div className="mt-2 max-w-3xl text-sm leading-7 text-slate-500">
+                    Work the queue from the left, open the active filing on the right, and keep workflow moving without digging through a flat spreadsheet-style list.
                   </div>
                 </div>
 
                 <div className="flex flex-wrap gap-3">
-                  <Link href="/dashboard" className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10 hover:text-white">
-                    ← Back to Dashboard
+                  <Link href="/dashboard" className="rounded-2xl border border-white/10 bg-white/[0.05] px-4 py-2.5 text-sm text-slate-200 transition hover:-translate-y-[1px] hover:bg-white/10 hover:text-white">
+                    ← Dashboard
                   </Link>
 
                   <button
                     type="button"
                     onClick={() => loadData({ silent: true })}
-                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10 hover:text-white"
+                    className="rounded-2xl border border-white/10 bg-white/[0.05] px-4 py-2.5 text-sm text-slate-200 transition hover:-translate-y-[1px] hover:bg-white/10 hover:text-white"
                   >
                     {isRefreshing ? "Refreshing..." : "Refresh"}
                   </button>
 
                   <button
                     type="button"
+                    onClick={openAddClientModal}
+                    className="rounded-2xl border border-white/10 bg-white/[0.05] px-4 py-2.5 text-sm text-slate-200 transition hover:-translate-y-[1px] hover:bg-white/10 hover:text-white"
+                  >
+                    + Add {workspaceType === "business_owner" ? "Business" : "Client"}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={openInviteModal}
+                    className="rounded-2xl border border-cyan-400/20 bg-cyan-500/10 px-4 py-2.5 text-sm text-cyan-200 transition hover:-translate-y-[1px] hover:bg-cyan-500/20 hover:text-cyan-100"
+                  >
+                    Invite to Portal
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={openModal}
-                    className="rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.28)] transition hover:from-cyan-300 hover:to-blue-400 active:scale-[0.98]"
+                    className="rounded-2xl bg-gradient-to-r from-cyan-400 via-sky-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_18px_35px_rgba(34,211,238,0.24)] transition hover:-translate-y-[1px] hover:from-cyan-300 hover:via-sky-300 hover:to-blue-400 active:scale-[0.99]"
                   >
                     + Add Filing
                   </button>
@@ -1825,20 +2545,17 @@ export default function FilingsPage() {
                 <TopKpi label="Filed" value={String(counts.FILED)} accent="slate" />
               </div>
 
-              <div className="mt-5 rounded-[26px] border border-white/6 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.018))] p-5 shadow-[0_24px_70px_rgba(0,0,0,0.24)]">
-                <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-                  <div>
-                    <div className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300/80">
-Operations Command Center
+              <div className="mt-5 rounded-[28px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015))] p-5 shadow-[0_24px_70px_rgba(0,0,0,0.24)]">
+                <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+                  <div className="max-w-2xl">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-cyan-300/80">
+                      Operations Workspace
                     </div>
-                    <div className="mt-2 text-lg font-semibold text-white">
-                      {statusFilter === "ALL" ? "Entire workflow workspace" : `${statusFilter} workflow view`}
+                    <div className="mt-2 text-xl font-semibold text-white">
+                      {statusFilter === "ALL" ? "Every filing in one focused workspace" : `${statusFilter} workflow view`}
                     </div>
-                    <div className="mt-1 text-sm text-slate-400">
-                      Search fast, act in bulk, and manage the selected filing from the workflow panel without losing context.
-                    </div>
-                    <div className="mt-2 text-sm text-slate-500">
-                      {counts.OVERDUE} overdue • {counts["DUE SOON"]} due soon • {counts["READY TO FILE"]} ready to file
+                    <div className="mt-2 text-sm leading-7 text-slate-400">
+                      Search fast, filter with precision, and manage the active filing in the workflow panel without losing the big picture.
                     </div>
                   </div>
 
@@ -1852,7 +2569,7 @@ Operations Command Center
                           setCompanyFilter("ALL");
                           setAssigneeFilter("ALL");
                         }}
-                        className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
+                        className="rounded-2xl border border-white/10 bg-white/[0.05] px-3.5 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
                       >
                         Clear Filter
                       </button>
@@ -1861,17 +2578,22 @@ Operations Command Center
                     <button
                       type="button"
                       onClick={() => setShowAdvancedFilters((prev) => !prev)}
-                      className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
+                      className="rounded-2xl border border-white/10 bg-white/[0.05] px-3.5 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
                     >
-                      {showAdvancedFilters ? "Hide Advanced" : "Advanced Filters"}
+                      {showAdvancedFilters ? "Hide Filters" : "Advanced Filters"}
                     </button>
 
                     <button
                       type="button"
                       onClick={handleExport}
-                      className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
+                      disabled={!canUseBulkWorkflows}
+                      className="rounded-2xl border border-white/10 bg-white/[0.05] px-3.5 py-2.5 text-sm text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {selectedCount > 0 ? `Export ${selectedCount}` : "Export View"}
+                      {!canUseBulkWorkflows
+                        ? `Upgrade to ${bulkWorkflowUpgradePlan} to Export`
+                        : selectedCount > 0
+                          ? `Export ${selectedCount}`
+                          : "Export View"}
                     </button>
                   </div>
                 </div>
@@ -1902,28 +2624,48 @@ Operations Command Center
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                      Bulk actions
+                  {selectedCount > 0 ? (
+                    <div className="rounded-[24px] border border-cyan-300/12 bg-[linear-gradient(180deg,rgba(8,47,73,0.18),rgba(15,23,42,0.07))] px-4 py-4 shadow-[0_18px_40px_rgba(8,47,73,0.18)]">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-200/85">
+                        Bulk actions
+                      </div>
+                      <div className="mt-1 text-sm text-white">
+                        {selectedCount} filing{selectedCount === 1 ? "" : "s"} selected
+                      </div>
+                      {!canUseBulkWorkflows && (
+                        <div className="mt-3 rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-200">
+                          Bulk actions and export are available on the {bulkWorkflowUpgradePlan} plan or higher.
+                        </div>
+                      )}
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <BulkActionButton disabled={!canUseBulkWorkflows} onClick={() => openStatusModal("MARK_READY")}>
+                          Mark Ready
+                        </BulkActionButton>
+                        <BulkActionButton disabled={!canUseBulkWorkflows} onClick={() => openStatusModal("MARK_FILED")}>
+                          Mark Filed
+                        </BulkActionButton>
+                        <BulkActionButton disabled={!canUseBulkWorkflows} onClick={openAssignModal}>
+                          Assign
+                        </BulkActionButton>
+                        <BulkActionButton disabled={!canUseBulkWorkflows} onClick={openDeleteModal} danger>
+                          Delete
+                        </BulkActionButton>
+                      </div>
                     </div>
-                    <div className="mt-1 text-sm text-white">
-                      {selectedCount === 0 ? "Select one or more filings to take action." : `${selectedCount} filing${selectedCount === 1 ? "" : "s"} selected`}
+                  ) : (
+                    <div className="rounded-[24px] border border-white/10 bg-white/[0.03] px-4 py-4">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                        Queue guidance
+                      </div>
+                      <div className="mt-1 text-sm text-white">
+                        Select filings to unlock bulk actions.
+                      </div>
+                      <div className="mt-2 text-sm text-slate-400">
+                        Keep the list focused by using status tabs first, then expand only the client groups that need attention.
+                      </div>
                     </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <BulkActionButton disabled={!selectedCount} onClick={() => openStatusModal("MARK_READY")}>
-                        Mark Ready
-                      </BulkActionButton>
-                      <BulkActionButton disabled={!selectedCount} onClick={() => openStatusModal("MARK_FILED")}>
-                        Mark Filed
-                      </BulkActionButton>
-                      <BulkActionButton disabled={!selectedCount} onClick={openAssignModal}>
-                        Assign
-                      </BulkActionButton>
-                      <BulkActionButton disabled={!selectedCount} onClick={openDeleteModal} danger>
-                        Delete
-                      </BulkActionButton>
-                    </div>
-                  </div>
+                  )}
                 </div>
 
                 <div className="mt-4">
@@ -1954,7 +2696,8 @@ Operations Command Center
                         value={assigneeFilter}
                         options={assigneeOptions}
                         onChange={setAssigneeFilter}
-                        displayValue={assigneeFilter === "ALL" ? "All Assignees" : assigneeFilter}
+                        displayValue={assigneeLabelMap[assigneeFilter] || "All Assignees"}
+                        labelMap={assigneeLabelMap}
                         placeholder="All Assignees"
                       />
                     </div>
@@ -1981,14 +2724,13 @@ Operations Command Center
                   </div>
                 )}
               </div>
-
-              <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_420px]">
-                <div className="min-w-0 rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.015))] shadow-[0_24px_70px_rgba(0,0,0,0.18)]">
+<div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_420px]">
+                <div className="min-w-0 rounded-[30px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.015))] shadow-[0_26px_80px_rgba(0,0,0,0.22)]">
                   <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
                     <div>
-                      <div className="text-sm font-semibold text-white">Filings Queue</div>
+                      <div className="text-sm font-semibold text-white">Client Filing Queue</div>
                       <div className="mt-1 text-sm text-slate-400">
-                        Click any row to work that filing in the side panel.
+                        Expand a client group, select the right filing, and handle the workflow without losing context.
                       </div>
                     </div>
                     <label className="flex items-center gap-2 text-sm text-slate-300">
@@ -2017,85 +2759,162 @@ Operations Command Center
                         No filings match your current filters.
                       </div>
                     ) : (
-                      <div className="space-y-3">
-                        {filteredFilings.map((row) => {
-                          const taskComplete = row.tasks.filter((task) => task.completed).length;
-                          const isActive = activeFilingId === row.id;
-                          const isFocused = focusedRowId === row.id;
-                          const isSelected = selectedIds.includes(row.id);
-                          const isPendingStatus = pendingStatusIds.includes(row.id);
-                          const isPendingAssignee = pendingAssigneeIds.includes(row.id);
+                      <div className="space-y-4">
+                        {groupedFilings.map((group) => {
+                          const isExpanded = expandedCompanies[group.company] ?? false;
+                          const activeInGroup = group.rows.some((row) => row.id === activeFilingId);
+                          const selectedInGroup = group.rows.filter((row) => selectedIds.includes(row.id)).length;
 
                           return (
                             <div
-                              key={row.id}
-                              onClick={() => {
-                                setActiveFilingId(row.id);
-                                setFocusedRowId(row.id);
-                              }}
-                              className={`group cursor-pointer rounded-[24px] border p-4 transition-all duration-200 ${
-                                isActive
-                                  ? "border-cyan-400/40 bg-cyan-400/[0.10] shadow-[0_0_0_1px_rgba(34,211,238,0.14),0_0_28px_rgba(34,211,238,0.10),0_20px_45px_rgba(2,132,199,0.12)]"
-                                  : "border-white/10 bg-white/[0.03] hover:-translate-y-[1px] hover:border-cyan-400/25 hover:bg-white/[0.06] hover:shadow-[0_0_25px_rgba(34,211,238,0.08)]"
-                              } ${isFocused ? "ring-1 ring-inset ring-white/12" : ""}`}
+                              key={group.company}
+                              className={`overflow-hidden rounded-[28px] border transition-all duration-200 ${
+                                activeInGroup
+                                  ? "border-cyan-400/20 bg-[linear-gradient(180deg,rgba(8,47,73,0.18),rgba(15,23,42,0.05))] shadow-[0_22px_55px_rgba(8,47,73,0.20)]"
+                                  : "border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))] shadow-[0_18px_40px_rgba(0,0,0,0.12)]"
+                              }`}
                             >
-                              <div className="flex items-start gap-4">
-                                <div className="pt-1">
-                                  <input
-                                    type="checkbox"
-                                    checked={isSelected}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      toggleRow(row.id, { shiftKey: event.shiftKey });
-                                    }}
-                                    readOnly
-                                    className="h-4 w-4 rounded border-white/20 bg-transparent text-cyan-400 focus:ring-cyan-400"
-                                  />
-                                </div>
-
-                                <div className={`mt-1 h-3 w-3 rounded-full ${getStatusDotClass(row.status)}`} />
-
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex flex-wrap items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <div className="flex flex-wrap items-center gap-2">
-                                        <div className="truncate text-[15px] font-semibold text-white">{row.title}</div>
-                                        <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold tracking-[0.16em] ${getStatusTone(row.status)}`}>
-                                          {row.status}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedCompanies((prev) => ({
+                                    ...prev,
+                                    [group.company]: !isExpanded,
+                                  }))
+                                }
+                                className="w-full px-5 py-4 text-left transition hover:bg-white/[0.04]"
+                              >
+                                <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                                  <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <div className="text-base font-semibold text-white">{group.company}</div>
+                                      {group.overdue > 0 && (
+                                        <span className="rounded-full border border-red-400/20 bg-red-500/10 px-2.5 py-1 text-[10px] font-semibold tracking-[0.16em] text-red-200">
+                                          {group.overdue} overdue
                                         </span>
-                                      </div>
-                                      <div className="mt-1 text-sm text-slate-400">
-                                        {row.company} • {row.state || "—"} • {row.type}
-                                      </div>
+                                      )}
+                                      {group.dueSoon > 0 && (
+                                        <span className="rounded-full border border-yellow-300/20 bg-yellow-400/10 px-2.5 py-1 text-[10px] font-semibold tracking-[0.16em] text-yellow-200">
+                                          {group.dueSoon} due soon
+                                        </span>
+                                      )}
+                                      {group.ready > 0 && (
+                                        <span className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold tracking-[0.16em] text-emerald-200">
+                                          {group.ready} ready
+                                        </span>
+                                      )}
                                     </div>
 
-                                    <div className="flex flex-col items-end gap-2">
-                                      <div className="text-sm font-medium text-white">{formatDate(row.dueDate)}</div>
-                                      <div className="text-xs text-slate-400">
-                                        {daysUntil(row.dueDate) < 0
-                                          ? `${Math.abs(daysUntil(row.dueDate))} day${Math.abs(daysUntil(row.dueDate)) === 1 ? "" : "s"} late`
-                                          : daysUntil(row.dueDate) === 0
-                                            ? "Due today"
-                                            : `Due in ${daysUntil(row.dueDate)} day${daysUntil(row.dueDate) === 1 ? "" : "s"}`}
-                                      </div>
+                                    <div className="mt-2 text-sm text-slate-400">
+                                      {group.nextFiling
+                                        ? `Next filing: ${group.nextFiling.title} • ${formatDate(group.nextFiling.dueDate)}`
+                                        : "No filings in this group."}
                                     </div>
                                   </div>
 
-                                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                                  <div className="flex flex-wrap items-center gap-2">
                                     <span className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300">
-                                      Assignee: {row.assignee ?? "Unassigned"}{isPendingAssignee ? "..." : ""}
+                                      {group.rows.length} filing{group.rows.length === 1 ? "" : "s"}
                                     </span>
-                                    <span className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300">
-                                      Tasks: {taskComplete}/{row.tasks.length}
-                                    </span>
-                                    {isPendingStatus && (
+                                    {selectedInGroup > 0 && (
                                       <span className="rounded-xl border border-cyan-300/20 bg-cyan-400/10 px-3 py-1.5 text-xs text-cyan-200">
-                                        Updating...
+                                        {selectedInGroup} selected
                                       </span>
                                     )}
+                                    <span className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300">
+                                      {isExpanded ? "Collapse" : "Expand"}
+                                    </span>
                                   </div>
                                 </div>
-                              </div>
+                              </button>
+
+                              {isExpanded && (
+                                <div className="border-t border-white/8 px-3 pb-3">
+                                  <div className="space-y-3 pt-3">
+                                    {group.rows.map((row) => {
+                                      const taskComplete = row.tasks.filter((task) => task.completed).length;
+                                      const isActive = activeFilingId === row.id;
+                                      const isFocused = focusedRowId === row.id;
+                                      const isSelected = selectedIds.includes(row.id);
+                                      const isPendingStatus = pendingStatusIds.includes(row.id);
+                                      const isPendingAssignee = pendingAssigneeIds.includes(row.id);
+
+                                      return (
+                                        <div
+                                          key={row.id}
+                                          onClick={() => {
+                                            setActiveFilingId(row.id);
+                                            setFocusedRowId(row.id);
+                                          }}
+                                          className={`group cursor-pointer rounded-[24px] border p-4 transition-all duration-200 ${
+                                            isActive
+                                              ? "border-cyan-400/40 bg-cyan-400/[0.10] shadow-[0_0_0_1px_rgba(34,211,238,0.14),0_0_30px_rgba(34,211,238,0.11),0_22px_55px_rgba(2,132,199,0.16)]"
+                                              : "border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.02))] hover:-translate-y-[1px] hover:border-cyan-400/25 hover:bg-white/[0.05] hover:shadow-[0_0_30px_rgba(34,211,238,0.08)]"
+                                          } ${isFocused ? "ring-1 ring-inset ring-white/12" : ""}`}
+                                        >
+                                          <div className="flex items-start gap-4">
+                                            <div className="pt-1">
+                                              <input
+                                                type="checkbox"
+                                                checked={isSelected}
+                                                onClick={(event) => {
+                                                  event.stopPropagation();
+                                                  toggleRow(row.id, { shiftKey: event.shiftKey });
+                                                }}
+                                                readOnly
+                                                className="h-4 w-4 rounded border-white/20 bg-transparent text-cyan-400 focus:ring-cyan-400"
+                                              />
+                                            </div>
+
+                                            <div className={`mt-1 h-3 w-3 rounded-full ${getStatusDotClass(row.status)}`} />
+
+                                            <div className="min-w-0 flex-1">
+                                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                                <div className="min-w-0">
+                                                  <div className="flex flex-wrap items-center gap-2">
+                                                    <div className="truncate text-[15px] font-semibold text-white">{row.title}</div>
+                                                    <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold tracking-[0.16em] ${getStatusTone(row.status)}`}>
+                                                      {row.status}
+                                                    </span>
+                                                  </div>
+                                                  <div className="mt-1 text-sm text-slate-400">
+                                                    {row.state || "—"} • {row.type}
+                                                  </div>
+                                                </div>
+
+                                                <div className="flex flex-col items-end gap-2">
+                                                  <div className="text-sm font-medium text-white">{formatDate(row.dueDate)}</div>
+                                                  <div className="text-xs text-slate-400">
+                                                    {daysUntil(row.dueDate) < 0
+                                                      ? `${Math.abs(daysUntil(row.dueDate))} day${Math.abs(daysUntil(row.dueDate)) === 1 ? "" : "s"} late`
+                                                      : daysUntil(row.dueDate) === 0
+                                                        ? "Due today"
+                                                        : `Due in ${daysUntil(row.dueDate)} day${daysUntil(row.dueDate) === 1 ? "" : "s"}`}
+                                                  </div>
+                                                </div>
+                                              </div>
+
+                                              <div className="mt-4 flex flex-wrap items-center gap-2">
+                                                <span className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300">
+                                                  Assignee: {row.assignee ?? ASSIGNEE_UNASSIGNED_LABEL}{isPendingAssignee ? "..." : ""}
+                                                </span>
+                                                <span className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-300">
+                                                  Tasks: {taskComplete}/{row.tasks.length}
+                                                </span>
+                                                {isPendingStatus && (
+                                                  <span className="rounded-xl border border-cyan-300/20 bg-cyan-400/10 px-3 py-1.5 text-xs text-cyan-200">
+                                                    Updating...
+                                                  </span>
+                                                )}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -2154,9 +2973,11 @@ Operations Command Center
                         <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-4">
                           <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Assignee</div>
                           <CustomDropdown
-                            value={activeFiling.assignee ?? "Unassigned"}
-                            options={assignees}
+                            value={activeFiling.assigneeUserId ?? ASSIGNEE_UNASSIGNED_VALUE}
+                            options={assignableTeamMemberOptions}
                             onChange={(value) => updateAssignee(activeFiling.id, value)}
+                            displayValue={activeFiling.assignee ?? ASSIGNEE_UNASSIGNED_LABEL}
+                            labelMap={assigneeLabelMap}
                             placeholder="Assignee"
                           />
                         </div>
@@ -2250,6 +3071,17 @@ Operations Command Center
           </div>
         </div>
 
+        <AddClientModal
+          isOpen={isAddClientModalOpen}
+          onClose={closeAddClientModal}
+          onSave={saveNewClient}
+          form={newClient}
+          setForm={setNewClient}
+          isSaving={isSavingClient}
+          error={clientModalError}
+          workspaceType={workspaceType}
+        />
+
         <AddFilingModal
           isOpen={isModalOpen}
           onClose={closeModal}
@@ -2261,6 +3093,7 @@ Operations Command Center
           updateForm={updateForm}
           companyOptions={companyOptions}
           suggestedFilings={suggestedFilings}
+          hasCheckedSuggestions={hasCheckedSuggestions}
           selectedSuggestionKeys={selectedSuggestionKeys}
           toggleSuggestedFiling={toggleSuggestedFiling}
           loadComplianceSuggestions={loadComplianceSuggestions}
@@ -2277,7 +3110,14 @@ Operations Command Center
           onClose={closeAssignModal}
           actions={
             <>
-              <CustomDropdown value={bulkAssignee} options={assignees} onChange={setBulkAssignee} placeholder="Assignee" />
+              <CustomDropdown
+                value={bulkAssignee}
+                options={assignableTeamMemberOptions}
+                onChange={setBulkAssignee}
+                displayValue={assigneeLabelMap[bulkAssignee] || ASSIGNEE_UNASSIGNED_LABEL}
+                labelMap={assigneeLabelMap}
+                placeholder="Assignee"
+              />
               <div className="mt-4 flex gap-3">
                 <button
                   type="button"
@@ -2366,7 +3206,19 @@ Operations Command Center
           ))}
         </div>
       </div>
-    </main>
+    
+      <InviteClientToPortalModal
+        isOpen={isInviteModalOpen}
+        onClose={closeInviteModal}
+        firmId={firmId || ""}
+        currentUserId={currentUserId}
+        clients={portalInviteClients}
+        onInviteCreated={() => {
+          showToast("success", "Portal invite saved", "The invite is ready for the client login flow.");
+        }}
+      />
+
+</main>
   );
 }
 
@@ -2388,7 +3240,7 @@ function TopKpi({
   }[accent];
 
   return (
-    <div className={`rounded-3xl border p-5 shadow-[0_18px_50px_rgba(0,0,0,0.14)] ${accents}`}>
+    <div className={`rounded-[28px] border p-5 shadow-[0_24px_60px_rgba(0,0,0,0.16)] transition hover:-translate-y-[1px] ${accents}`}>
       <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{label}</div>
       <div className="mt-3 text-4xl font-semibold text-white">{value}</div>
     </div>
@@ -2447,7 +3299,7 @@ function BulkActionButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-xl border px-3 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`rounded-2xl border px-3.5 py-2.5 text-sm transition hover:-translate-y-[1px] disabled:cursor-not-allowed disabled:opacity-40 ${
         danger
           ? "border-red-400/20 bg-red-500/10 text-red-200 hover:bg-red-500/15"
           : "border-white/10 bg-white/5 text-slate-200 hover:bg-white/10"
@@ -2460,7 +3312,7 @@ function BulkActionButton({
 
 function DetailStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+    <div className="rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.02))] px-4 py-3 shadow-[0_10px_24px_rgba(0,0,0,0.10)]">
       <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{label}</div>
       <div className="mt-1 text-sm font-medium text-white">{value}</div>
     </div>

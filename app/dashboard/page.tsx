@@ -9,7 +9,6 @@ import {
   AlertTriangle,
   ArrowRight,
   Bell,
-  Building2,
   Calendar,
   CheckCircle2,
   ChevronLeft,
@@ -18,6 +17,7 @@ import {
   LayoutDashboard,
   LifeBuoy,
   LogOut,
+  MessageSquare,
   MoreHorizontal,
   Settings,
   UserPlus,
@@ -90,7 +90,7 @@ function daysUntil(dateStr: string) {
 }
 
 function formatDaysSubtitle(days: number) {
-  if (days < 0) return `Past Due: ${Math.abs(days)} Day${Math.abs(days) === 1 ? "" : "s"}`;
+  if (days < 0) return `Overdue by ${Math.abs(days)} Day${Math.abs(days) === 1 ? "" : "s"}`;
   if (days === 0) return "Due Today";
   return `Due in ${days} Day${days === 1 ? "" : "s"}`;
 }
@@ -113,7 +113,7 @@ function getDashboardPresentation(bucket: DashboardBucket) {
         subtitleClass: "text-red-400",
         icon: "!",
         iconClass: "bg-red-500/15 text-red-400 border border-red-400/20",
-        primaryAction: "Mark Filed",
+        primaryAction: "Mark as Filed",
         primaryClass:
           "bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 hover:from-cyan-300 hover:to-blue-400",
       };
@@ -122,16 +122,16 @@ function getDashboardPresentation(bucket: DashboardBucket) {
         subtitleClass: "text-yellow-400",
         icon: "◔",
         iconClass: "bg-yellow-500/15 text-yellow-400 border border-yellow-400/20",
-        primaryAction: "Mark Ready",
+        primaryAction: "Mark as Ready",
         primaryClass:
-          "bg-yellow-400/15 text-yellow-300 border border-yellow-300/20 hover:bg-yellow-400/25",
+          "bg-yellow-400/10 text-yellow-300 border border-yellow-300/20 hover:bg-yellow-400/25",
       };
     case "READY TO FILE":
       return {
         subtitleClass: "text-emerald-400",
         icon: "✓",
         iconClass: "bg-emerald-500/15 text-emerald-400 border border-emerald-400/20",
-        primaryAction: "Mark Filed",
+        primaryAction: "Mark as Filed",
         primaryClass:
           "bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 hover:from-cyan-300 hover:to-blue-400",
       };
@@ -140,7 +140,7 @@ function getDashboardPresentation(bucket: DashboardBucket) {
         subtitleClass: "text-blue-400",
         icon: "→",
         iconClass: "bg-blue-500/15 text-blue-400 border border-blue-400/20",
-        primaryAction: "Prepare",
+        primaryAction: "Start",
         primaryClass: "bg-white/5 text-white border border-white/10 hover:bg-white/10",
       };
     case "FILED":
@@ -165,9 +165,9 @@ function buildDashboardFiling(filing: DbFiling, nameMap: Map<string, string>): F
   const dayText = formatDaysSubtitle(daysUntil(filing.due_date));
   const subtitle =
     bucket === "READY TO FILE"
-      ? "Prepared and ready to submit"
+      ? "Ready to submit"
       : bucket === "FILED"
-      ? "Filed successfully"
+      ? "Filed"
       : dayText;
 
   return {
@@ -209,7 +209,6 @@ export default function DashboardPage() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [memberRole, setMemberRole] = useState<MemberRole>("unknown");
 
-  const businessNavLabel = workspaceSummary.workspaceType === "accounting_firm" ? "Clients" : "Businesses";
   const canManageTeam = memberRole === "owner" || memberRole === "admin";
   const formattedPlan = formatPlanLabel(workspaceSummary.plan);
 
@@ -404,13 +403,47 @@ export default function DashboardPage() {
   }, []);
 
   async function updateFilingStatus(id: string, nextStatus: FilingStatus) {
+    const previousFilings = filings;
+
+    setFilings((currentFilings) =>
+      currentFilings.map((filing) => {
+        if (filing.id !== id) return filing;
+
+        const nextBucket: DashboardBucket =
+          nextStatus === "filed"
+            ? "FILED"
+            : nextStatus === "in_progress"
+              ? "READY TO FILE"
+              : filing.bucket;
+
+        const ui = getDashboardPresentation(nextBucket);
+
+        return {
+          ...filing,
+          dbStatus: nextStatus,
+          bucket: nextBucket,
+          subtitle:
+            nextBucket === "READY TO FILE"
+              ? "Ready to submit"
+              : nextBucket === "FILED"
+                ? "Filed"
+                : filing.subtitle,
+          subtitleClass: ui.subtitleClass,
+          icon: ui.icon,
+          iconClass: ui.iconClass,
+          primaryAction: ui.primaryAction,
+          primaryClass: ui.primaryClass,
+        };
+      })
+    );
+    setOpenMenuId(null);
+
     const { error } = await supabase.from("filings").update({ status: nextStatus }).eq("id", id);
+
     if (error) {
       console.error(error);
-      return;
+      setFilings(previousFilings);
     }
-    await loadDashboard();
-    setOpenMenuId(null);
   }
 
   async function handlePrimaryAction(filing: Filing) {
@@ -482,6 +515,8 @@ export default function DashboardPage() {
     null;
 
   const nextUpcoming = filings.find((f) => f.bucket === "UPCOMING") ?? null;
+  const topPriorityRisk = topPriority ? getRiskMeta(topPriority.bucket) : null;
+  const workspaceHealth = getWorkspaceHealthTone(attentionCount);
 
   const workspaceSummaryCards = [
     {
@@ -490,9 +525,9 @@ export default function DashboardPage() {
       helper: workspaceSummary.workspaceType === "accounting_firm" ? "Across clients" : "Tracked in workspace",
     },
     {
-      label: "Attention",
-      value: String(attentionCount),
-      helper: attentionCount === 0 ? "All clear" : "Needs action now",
+      label: "Risk",
+      value: topPriorityRisk ? `${topPriorityRisk.score}/100` : "0/100",
+      helper: topPriorityRisk ? topPriorityRisk.detail : "No active risk",
     },
     {
       label: "Next due",
@@ -516,10 +551,39 @@ export default function DashboardPage() {
       entitiesWithFilings,
       message:
         entitiesWithoutFilings > 0
-          ? `${entitiesWithoutFilings} ${entitiesWithoutFilings === 1 ? "entity appears" : "entities appear"} to be missing filing coverage.`
-          : "No obvious filing coverage gaps detected from the current filing list.",
+          ? `${entitiesWithoutFilings} ${entitiesWithoutFilings === 1 ? "entity appears" : "entities appear"} to be missing expected filings based on current setup.`
+          : "Every tracked entity has visible filing coverage based on the current filing list.",
     };
   }, [filings, workspaceSummary.entityCount]);
+
+  const smartInsights = [
+    {
+      label: "Next move",
+      value: topPriority ? topPriority.primaryAction : "Set up filings",
+      helper: topPriority ? `${topPriority.title} • ${topPriority.company}` : "Create your first filing to activate the dashboard",
+    },
+    {
+      label: "Queue pressure",
+      value: attentionCount === 0 ? "Clear" : `${attentionCount} active`,
+      helper:
+        overdueCount > 0
+          ? `${overdueCount} overdue ${overdueCount === 1 ? "item" : "items"} should be cleared first`
+          : dueSoonCount > 0
+            ? `${dueSoonCount} due within 7 days`
+            : "No urgent filings in the queue",
+    },
+    {
+      label: "Setup check",
+      value:
+        filingCoverageSummary.entitiesWithoutFilings > 0
+          ? `${filingCoverageSummary.entitiesWithoutFilings} gap${filingCoverageSummary.entitiesWithoutFilings === 1 ? "" : "s"}`
+          : "Covered",
+      helper:
+        filingCoverageSummary.entitiesWithoutFilings > 0
+          ? "Review entities without visible filings"
+          : "Every tracked entity has visible filings",
+    },
+  ];
 
   const prioritizedActionItems = [
     ...filings.filter((f) => f.bucket === "OVERDUE").slice(0, 3),
@@ -528,12 +592,56 @@ export default function DashboardPage() {
   ];
 
   const topCardStyle = topPriority ? getTopCardStyle(topPriority.bucket) : null;
+  const missingFilingsHref =
+    filingCoverageSummary.entitiesWithoutFilings > 0
+      ? "/filings?focus=coverage-gaps&status=UPCOMING"
+      : "/filings";
+  const complianceSetupHref =
+    workspaceSummary.workspaceType === "accounting_firm"
+      ? "/filings?setup=compliance&scope=clients"
+      : "/filings?setup=compliance&scope=workspace";
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.08),transparent_28%),linear-gradient(to_bottom,#07111f,#020617)] text-white">
+    <>
+      <style jsx global>{`
+        @keyframes dh-risk-pulse {
+          0%,
+          100% {
+            transform: scale(1);
+            opacity: 0.18;
+          }
+          50% {
+            transform: scale(1.035);
+            opacity: 0.34;
+          }
+        }
+
+        @keyframes dh-signal-sweep {
+          0% {
+            transform: translateX(-120%);
+          }
+          100% {
+            transform: translateX(260%);
+          }
+        }
+
+        @keyframes dh-priority-dot {
+          0%,
+          100% {
+            opacity: 0.45;
+            transform: scale(0.92);
+          }
+          50% {
+            opacity: 1;
+            transform: scale(1.08);
+          }
+        }
+      `}</style>
+
+      <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.055),transparent_30%),linear-gradient(to_bottom,#07111f,#020617)] text-white">
       <div className="mx-auto max-w-[1700px] px-4 py-4 sm:px-6 sm:py-6">
-        <div className="rounded-[30px] border border-cyan-400/10 bg-white/[0.03] p-3 shadow-[0_0_50px_rgba(34,211,238,0.06)] sm:p-4">
-          <div className="overflow-hidden rounded-[26px] border border-white/10 bg-[linear-gradient(to_bottom,rgba(11,21,38,0.96),rgba(8,15,28,0.98))] shadow-[0_30px_80px_rgba(0,0,0,0.45)]">
+        <div className="rounded-[30px] border border-cyan-400/10 bg-white/[0.03] p-3 shadow-[0_24px_70px_rgba(0,0,0,0.24)] sm:p-4">
+          <div className="overflow-hidden rounded-[26px] border border-white/10 bg-[linear-gradient(to_bottom,rgba(11,21,38,0.96),rgba(8,15,28,0.98))] shadow-[0_30px_80px_rgba(0,0,0,0.38)]">
             <div
               className="lg:grid"
               style={{ gridTemplateColumns: isSidebarCollapsed ? "88px minmax(0,1fr)" : "272px minmax(0,1fr)" }}
@@ -579,7 +687,7 @@ export default function DashboardPage() {
                       <button
                         type="button"
                         onClick={() => setIsSidebarCollapsed(true)}
-                        className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-slate-300 transition hover:border-cyan-300/20 hover:bg-cyan-400/10 hover:text-cyan-200"
+                        className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-slate-300 transition hover:border-cyan-300/20 hover:bg-cyan-400/7 hover:text-cyan-200"
                         aria-label="Collapse sidebar"
                       >
                         <ChevronLeft size={16} />
@@ -591,7 +699,7 @@ export default function DashboardPage() {
                     <button
                       type="button"
                       onClick={() => setIsSidebarCollapsed(false)}
-                      className="mt-4 flex h-9 w-full items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-slate-300 transition hover:border-cyan-300/20 hover:bg-cyan-400/10 hover:text-cyan-200"
+                      className="mt-4 flex h-9 w-full items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-slate-300 transition hover:border-cyan-300/20 hover:bg-cyan-400/7 hover:text-cyan-200"
                       aria-label="Expand sidebar"
                     >
                       <ChevronRight size={16} />
@@ -623,6 +731,13 @@ export default function DashboardPage() {
                       collapsed={isSidebarCollapsed}
                     />
                     <SidebarNavItem
+                      href="/portal/dashboard"
+                      label="Client Portal"
+                      icon={MessageSquare}
+                      pathname={pathname}
+                      collapsed={isSidebarCollapsed}
+                    />
+                    <SidebarNavItem
                       href="/calendar"
                       label="Calendar"
                       icon={Calendar}
@@ -633,13 +748,6 @@ export default function DashboardPage() {
                       href="/reports"
                       label="Reports"
                       icon={CheckCircle2}
-                      pathname={pathname}
-                      collapsed={isSidebarCollapsed}
-                    />
-                    <SidebarNavItem
-                      href="/businesses"
-                      label={businessNavLabel}
-                      icon={Building2}
                       pathname={pathname}
                       collapsed={isSidebarCollapsed}
                     />
@@ -663,33 +771,48 @@ export default function DashboardPage() {
                   </nav>
 
                   {!isSidebarCollapsed && (
-                    <div className="mt-8 rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.72),rgba(15,23,42,0.4))] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
-                            WORKSPACE
+                    <div className="mt-8 overflow-hidden rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(12,21,37,0.84),rgba(7,14,27,0.72))] shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_18px_40px_rgba(2,6,23,0.28)]">
+                      <div className="border-b border-white/10 bg-[linear-gradient(90deg,rgba(34,211,238,0.12),rgba(255,255,255,0))] px-4 py-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
+                              WORKSPACE
+                            </div>
+                            <div className="mt-2 text-sm font-semibold text-white">{workspaceSummary.workspaceName || "Your Workspace"}</div>
+                            <div className="mt-1 text-xs text-slate-400">
+                              {formattedPlan} Plan • {workspaceSummary.workspaceType === "accounting_firm" ? "Accounting firm" : workspaceSummary.workspaceType === "business_owner" ? "Business" : "Workspace"}
+                            </div>
                           </div>
-                          <div className="mt-2 text-sm font-semibold text-white">{workspaceSummary.workspaceName || "Your Workspace"}</div>
-                          <div className="mt-1 text-xs text-slate-400">
-                            {formattedPlan} Plan • {workspaceSummary.workspaceType === "accounting_firm" ? "Accounting firm" : workspaceSummary.workspaceType === "business_owner" ? "Business" : "Workspace"}
+                          <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${workspaceHealth.pillClass}`}>
+                            <span className={`h-1.5 w-1.5 rounded-full ${workspaceHealth.dotClass}`} />
+                            Synced
                           </div>
                         </div>
-                        <div className="rounded-full border border-cyan-300/15 bg-cyan-400/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-200">
-                          Live
+
+                        <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-xs font-semibold text-white">{workspaceHealth.title}</div>
+                              <div className="mt-1 text-[11px] leading-5 text-slate-400">{workspaceHealth.detail}</div>
+                            </div>
+                            <div className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${workspaceHealth.pillClass}`}>
+                              {attentionCount === 0 ? "Clear" : `${attentionCount} active`}
+                            </div>
+                          </div>
                         </div>
                       </div>
 
-                      <div className="mt-4 space-y-3">
+                      <div className="space-y-3 p-4">
                         {workspaceSummaryCards.map((item) => (
                           <div
                             key={item.label}
-                            className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-3"
+                            className="flex items-center justify-between rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0.02))] px-3 py-3"
                           >
                             <div className="min-w-0">
-                              <div className="text-xs font-medium text-slate-300">{item.label}</div>
-                              <div className="mt-1 truncate text-[11px] text-slate-500">{item.helper}</div>
+                              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{item.label}</div>
+                              <div className="mt-1 truncate text-[11px] text-slate-400">{item.helper}</div>
                             </div>
-                            <div className="ml-4 text-sm font-semibold text-white">{item.value}</div>
+                            <div className="ml-4 text-base font-semibold text-white">{item.value}</div>
                           </div>
                         ))}
                       </div>
@@ -699,25 +822,39 @@ export default function DashboardPage() {
 
                 <div className={`${isSidebarCollapsed ? "p-3" : "p-4"} border-t border-white/10`}>
                   {!isSidebarCollapsed ? (
-                    <div className="rounded-2xl border border-cyan-400/10 bg-[linear-gradient(135deg,rgba(34,211,238,0.12),rgba(59,130,246,0.08),rgba(255,255,255,0.02))] p-4 shadow-[0_0_30px_rgba(34,211,238,0.08)]">
-                      <div className="text-sm font-semibold text-white">Need attention</div>
-                      <div className="mt-1 text-xs leading-5 text-slate-300">
-                        {attentionCount === 0
-                          ? "You’re in a good spot right now."
-                          : `${attentionCount} filing${attentionCount === 1 ? "" : "s"} need action.`}
+                    <div className="overflow-hidden rounded-[24px] border border-cyan-400/12 bg-[linear-gradient(145deg,rgba(15,23,42,0.86),rgba(5,11,22,0.94))] shadow-[0_18px_42px_rgba(2,6,23,0.34)]">
+                      <div className="border-b border-white/10 bg-[linear-gradient(90deg,rgba(34,211,238,0.16),rgba(59,130,246,0.06),rgba(255,255,255,0))] px-4 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-200/80">Next step</div>
+                            <div className="mt-1 text-sm font-semibold text-white">Open filing queue</div>
+                          </div>
+                          <div className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${workspaceHealth.pillClass}`}>
+                            {attentionCount === 0 ? "Stable" : "Review"}
+                          </div>
+                        </div>
                       </div>
-                      <Link
-                        href="/filings"
-                        className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.18)] transition hover:from-cyan-300 hover:to-blue-400"
-                      >
-                        Open Filings
-                      </Link>
+
+                      <div className="p-4">
+                        <div className="text-xs leading-5 text-slate-300">
+                          {attentionCount === 0
+                            ? "Everything urgent is under control. Use the workspace to monitor what is coming next."
+                            : `${attentionCount} filing${attentionCount === 1 ? "" : "s"} require action. Open the workspace to clear the queue in order.`}
+                        </div>
+                        <Link
+                          href="/filings"
+                          className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[linear-gradient(135deg,rgba(34,211,238,0.96),rgba(59,130,246,0.92))] px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_12px_30px_rgba(34,211,238,0.24)] transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_18px_34px_rgba(34,211,238,0.3)]"
+                        >
+                          Open Filing Queue
+                          <ArrowRight size={16} />
+                        </Link>
+                      </div>
                     </div>
                   ) : (
                     <Link
                       href="/filings"
-                      className="flex h-12 w-full items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-400/10 text-cyan-200 transition hover:bg-cyan-400/15"
-                      title="Open Filings"
+                      className="flex h-12 w-full items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-400/7 text-cyan-200 transition hover:bg-cyan-400/15"
+                      title="Open Filing Queue"
                     >
                       <ArrowRight size={18} />
                     </Link>
@@ -751,11 +888,11 @@ export default function DashboardPage() {
                           DASHBOARD
                         </div>
                         <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
-                          Focus here — <span className="text-cyan-300">{attentionCount}</span>{" "}
-                          {attentionCount === 1 ? "filing needs action" : "filings need action"}
+                          Start here — <span className="text-cyan-300">{attentionCount}</span>{" "}
+                          {attentionCount === 1 ? "filing needs attention" : "filings need attention"}
                         </h1>
                         <p className="mt-2 text-slate-400">
-                          Start with the highest-risk item, then work down your queue.
+                          Clear the highest-risk item first, then work down the queue.
                         </p>
                         <div className="mt-2 text-sm text-slate-500">
                           {overdueCount} at risk • {dueSoonCount} due next • {readyCount} ready to file
@@ -767,7 +904,7 @@ export default function DashboardPage() {
                       {canManageTeam && (
                         <Link
                           href="/team"
-                          className="hidden sm:inline-flex items-center gap-2 rounded-xl border border-cyan-300/20 bg-cyan-400/10 px-4 py-2 text-sm text-cyan-100 transition hover:bg-cyan-400/15"
+                          className="hidden sm:inline-flex items-center gap-2 rounded-xl border border-cyan-300/20 bg-cyan-400/7 px-4 py-2 text-sm text-cyan-100 transition hover:bg-cyan-400/15"
                         >
                           <UserPlus size={16} />
                           Invite
@@ -778,7 +915,13 @@ export default function DashboardPage() {
                         href="/filings"
                         className="hidden sm:inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
                       >
-                        View All Filings →
+                        View filings →
+                      </Link>
+                      <Link
+                        href="/portal/dashboard"
+                        className="hidden sm:inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
+                      >
+                        Client portal →
                       </Link>
 
                       <div className="relative" ref={alertsRef}>
@@ -911,20 +1054,20 @@ export default function DashboardPage() {
                   <div className="mt-4 flex gap-2 overflow-x-auto pb-1 lg:hidden">
                     <MobileNavPill href="/dashboard" label="Dashboard" pathname={pathname} />
                     <MobileNavPill href="/filings" label="Filings" pathname={pathname} />
+                    <MobileNavPill href="/portal/dashboard" label="Client Portal" pathname={pathname} />
                     <MobileNavPill href="/calendar" label="Calendar" pathname={pathname} />
                     <MobileNavPill href="/reports" label="Reports" pathname={pathname} />
-                    <MobileNavPill href="/businesses" label={businessNavLabel} pathname={pathname} />
                     {canManageTeam && <MobileNavPill href="/team" label="Team" pathname={pathname} />}
                     <MobileNavPill href="/settings" label="Settings" pathname={pathname} />
                   </div>
 
                   <div className="mt-4 lg:hidden">
                     <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-                      Focus here — <span className="text-cyan-300">{attentionCount}</span>{" "}
-                      {attentionCount === 1 ? "filing needs action" : "filings need action"}
+                      Start here — <span className="text-cyan-300">{attentionCount}</span>{" "}
+                      {attentionCount === 1 ? "filing needs attention" : "filings need attention"}
                     </h1>
                     <p className="mt-2 text-slate-400">
-                      Start with the highest-risk item, then work down your queue.
+                      Clear the highest-risk item first, then work down the queue.
                     </p>
                     <div className="mt-2 text-sm text-slate-500">
                       {overdueCount} at risk • {dueSoonCount} due next • {readyCount} ready to file
@@ -938,7 +1081,7 @@ export default function DashboardPage() {
                       <span>Plan</span>
                       <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-slate-300">{formattedPlan}</span>
                       {canManageTeam && (
-                        <span className="rounded-full border border-cyan-300/15 bg-cyan-400/10 px-2 py-1 text-cyan-200">
+                        <span className="rounded-full border border-cyan-300/15 bg-cyan-400/7 px-2 py-1 text-cyan-200">
                           {memberRole}
                         </span>
                       )}
@@ -947,17 +1090,17 @@ export default function DashboardPage() {
                     <div className="grid items-stretch gap-8 md:grid-cols-2 xl:grid-cols-4">
                       <Link href="/filings?status=OVERDUE" className="block xl:scale-[1.04]">
                         <StatCard
-                          label="AT RISK"
+                          label="OVERDUE"
                           value={String(overdueCount)}
-                          sub="Require immediate action"
+                          sub="Fix now"
                           icon={<AlertTriangle size={19} />}
                           accent="red"
                         />
                       </Link>
 
-                      <Link href="/filings?status=DUE%20SOON" className="block transition-all duration-200 hover:shadow-[0_0_25px_rgba(34,211,238,0.12)]">
+                      <Link href="/filings?status=DUE%20SOON" className="block transition-all duration-200 hover:shadow-[0_12px_30px_rgba(2,6,23,0.22)]">
                         <StatCard
-                          label="DUE NEXT"
+                          label="DUE SOON"
                           value={String(dueSoonCount)}
                           sub="Within 7 days"
                           icon={<Calendar size={19} />}
@@ -965,48 +1108,61 @@ export default function DashboardPage() {
                         />
                       </Link>
 
-                      <Link href="/filings?status=READY%20TO%20FILE" className="block transition-all duration-200 hover:shadow-[0_0_25px_rgba(34,211,238,0.12)]">
+                      <Link href="/filings?status=READY%20TO%20FILE" className="block transition-all duration-200 hover:shadow-[0_12px_30px_rgba(2,6,23,0.22)]">
                         <StatCard
                           label="READY"
                           value={String(readyCount)}
-                          sub="Prepared and awaiting submission"
+                          sub="Ready to file"
                           icon={<CheckCircle2 size={19} />}
                           accent="green"
                         />
                       </Link>
 
-                      <Link href="/filings?status=UPCOMING" className="block transition-all duration-200 hover:shadow-[0_0_25px_rgba(34,211,238,0.12)]">
+                      <Link href="/filings?status=UPCOMING" className="block transition-all duration-200 hover:shadow-[0_12px_30px_rgba(2,6,23,0.22)]">
                         <StatCard
-                          label="LATER"
+                          label="UPCOMING"
                           value={String(upcomingCount)}
-                          sub="Future deadlines to watch"
+                          sub="Not urgent yet"
                           icon={<ArrowRight size={19} />}
                           accent="blue"
                         />
                       </Link>
                     </div>
 
-                    {!loading && (
-                      <div className="mt-8 overflow-hidden rounded-[28px] border border-violet-400/15 bg-[linear-gradient(135deg,rgba(91,33,182,0.18),rgba(30,41,59,0.08),rgba(0,0,0,0))] shadow-[0_0_0_1px_rgba(168,85,247,0.05),0_20px_50px_rgba(91,33,182,0.12)]">
+                    {!loading && filings.length > 0 && (
+                      <div className="mt-8 grid gap-4 md:grid-cols-3">
+                        {smartInsights.map((insight) => (
+                          <SmartInsightCard
+                            key={insight.label}
+                            label={insight.label}
+                            value={insight.value}
+                            helper={insight.helper}
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    {!loading && filings.length > 0 && (
+                      <div className="mt-8 overflow-hidden rounded-[28px] border border-cyan-400/10 bg-[linear-gradient(135deg,rgba(34,211,238,0.045),rgba(15,23,42,0.12),rgba(255,255,255,0.012))] shadow-[0_18px_44px_rgba(2,6,23,0.16)]">
                         <div className="grid gap-6 p-6 lg:grid-cols-[minmax(0,1.35fr)_260px]">
                           <div>
                             <div className="flex flex-wrap items-center gap-3">
-                              <div className="text-[11px] font-semibold tracking-[0.18em] text-violet-200/80">
-                                MISSING FILINGS DETECTED
-                              </div>
-                              <div className="rounded-full border border-violet-300/20 bg-violet-400/10 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-violet-200">
+                              <div className="text-[11px] font-semibold tracking-[0.18em] text-cyan-200/75">
                                 COVERAGE CHECK
+                              </div>
+                              <div className="rounded-full border border-cyan-300/15 bg-cyan-400/8 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-cyan-100">
+                                SETUP CHECK
                               </div>
                             </div>
 
                             <div className="mt-4 text-2xl font-semibold tracking-tight text-white sm:text-[2rem]">
                               {filingCoverageSummary.entitiesWithoutFilings > 0
-                                ? `${filingCoverageSummary.entitiesWithoutFilings} ${filingCoverageSummary.entitiesWithoutFilings === 1 ? "entity may be missing filings" : "entities may be missing filings"}`
-                                : "No obvious missing filing coverage"}
+                                ? `${filingCoverageSummary.entitiesWithoutFilings} ${filingCoverageSummary.entitiesWithoutFilings === 1 ? "entity may be missing expected filings" : "entities may be missing expected filings"}`
+                                : "Filing coverage looks complete"}
                             </div>
 
                             <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-300">
-                              {filingCoverageSummary.message} Use this as a fast dashboard signal, then confirm setup and missing compliance work from the filings page.
+                              {filingCoverageSummary.message} Confirm the setup from the filings page before treating this as final.
                             </p>
 
                             <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-slate-300">
@@ -1026,7 +1182,7 @@ export default function DashboardPage() {
 
                             <div className="mt-4 space-y-3">
                               <PriorityMiniStat
-                                label="Coverage"
+                                label="Coverage Status"
                                 value={
                                   filingCoverageSummary.entitiesWithoutFilings > 0
                                     ? "Needs review"
@@ -1034,23 +1190,17 @@ export default function DashboardPage() {
                                 }
                               />
                               <PriorityMiniStat
-                                label="Entities"
+                                label="Entities Tracked"
                                 value={`${filingCoverageSummary.entitiesWithFilings}/${workspaceSummary.entityCount || 0} tracked`}
                               />
                             </div>
 
                             <div className="mt-5 flex flex-col gap-3">
                               <Link
-                                href="/filings"
-                                className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
+                                href={missingFilingsHref}
+                                className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_20px_rgba(34,211,238,0.12)] transition-all duration-150 hover:scale-[1.02] hover:from-cyan-300 hover:to-blue-400 active:scale-[0.98]"
                               >
-                                Review Filings
-                              </Link>
-                              <Link
-                                href="/businesses"
-                                className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-violet-400 to-cyan-400 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(168,85,247,0.18)] transition-all duration-150 hover:scale-[1.02] hover:from-violet-300 hover:to-cyan-300 active:scale-[0.98]"
-                              >
-                                Check Entity Setup
+                                Review Gaps
                               </Link>
                             </div>
                           </div>
@@ -1058,27 +1208,65 @@ export default function DashboardPage() {
                       </div>
                     )}
 
-                    {loading && (
-                      <div className="mt-8 rounded-3xl border border-white/10 bg-white/[0.03] px-5 py-8 text-sm text-slate-400">
-                        Loading your workspace...
-                      </div>
-                    )}
+                    {loading && <DashboardSkeleton />}
 
                     {!loading && topPriority && topCardStyle && (
-                      <div className={`mt-10 overflow-hidden rounded-[32px] shadow-[0_0_40px_rgba(34,211,238,0.18)] ${topCardStyle.wrapper}`}>
-                        <div className="grid gap-8 p-8 lg:grid-cols-[minmax(0,1.45fr)_340px] lg:p-9">
+                      <div className={`relative mt-10 overflow-hidden rounded-[32px] shadow-[0_18px_54px_rgba(2,6,23,0.2)] ${topCardStyle.wrapper}`}>
+                        {topPriority.bucket !== "FILED" && (
+                          <>
+                            <div className="pointer-events-none absolute inset-0">
+                              <div
+                                className={`absolute inset-0 rounded-[32px] blur-3xl ${
+                                  topPriority.bucket === "OVERDUE"
+                                    ? "bg-red-500/12"
+                                    : topPriority.bucket === "DUE SOON"
+                                    ? "bg-yellow-400/10"
+                                    : "bg-cyan-400/7"
+                                }`}
+                                
+                              />
+                            </div>
+
+                            <div className="pointer-events-none absolute inset-x-0 top-0 h-[2px] overflow-hidden rounded-t-[32px]">
+                              <div
+                                className={`h-full w-[36%] ${
+                                  topPriority.bucket === "OVERDUE"
+                                    ? "bg-red-400"
+                                    : topPriority.bucket === "DUE SOON"
+                                    ? "bg-yellow-300"
+                                    : "bg-cyan-400"
+                                }`}
+                                
+                              />
+                            </div>
+                          </>
+                        )}
+
+                        <div className="relative grid gap-8 p-8 lg:grid-cols-[minmax(0,1.45fr)_340px] lg:p-9">
                           <div>
                             <div className="flex flex-wrap items-center gap-3">
                               <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
-                                START HERE
+                                HIGHEST PRIORITY FILING
                               </div>
                               <div className="rounded-full border border-yellow-300/20 bg-yellow-400/10 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-yellow-300">
                                 DO THIS NEXT
                               </div>
+                              {topPriorityRisk && (
+                                <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-semibold tracking-[0.14em] ${topPriorityRisk.pillClass}`}>
+                                  <span
+                                    className={`h-2 w-2 rounded-full ${topPriorityRisk.dotClass}`}
+                                   
+                                  />
+                                  {topPriorityRisk.label.toUpperCase()} RISK • {topPriorityRisk.score}/100
+                                </div>
+                              )}
                             </div>
 
                             <div className="mt-5 flex items-start gap-4">
-                              <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border text-2xl ${topCardStyle.iconWrap}`}>
+                              <div
+                                className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border text-2xl ${topCardStyle.iconWrap}`}
+                                
+                              >
                                 {topPriority.bucket === "OVERDUE"
                                   ? "⚠"
                                   : topPriority.bucket === "DUE SOON"
@@ -1089,13 +1277,27 @@ export default function DashboardPage() {
                               </div>
 
                               <div className="min-w-0">
-                                <div className="text-3xl font-semibold tracking-tight text-white sm:text-[2.25rem]">
+                                <div className="text-3xl font-semibold tracking-tight text-white sm:text-[2.35rem]">
                                   {topPriority.title}
                                 </div>
                                 <div className="mt-2 text-sm text-slate-400 sm:text-base">{topPriority.company}</div>
 
                                 <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
-                                  <span className={topPriority.subtitleClass}>📅 {topPriority.subtitle}</span>
+                                  <span className={`inline-flex items-center gap-2 ${topPriority.subtitleClass}`}>
+                                    <span>📅 {topPriority.subtitle}</span>
+                                    {topPriority.bucket !== "FILED" && (
+                                      <span
+                                        className={`h-1.5 w-1.5 rounded-full ${
+                                          topPriority.bucket === "OVERDUE"
+                                            ? "bg-red-400"
+                                            : topPriority.bucket === "DUE SOON"
+                                            ? "bg-yellow-300"
+                                            : "bg-cyan-300"
+                                        }`}
+                                       
+                                      />
+                                    )}
+                                  </span>
                                   <span className="text-slate-500">•</span>
                                   <span className="text-slate-300">
                                     {topPriority.bucket === "OVERDUE"
@@ -1103,30 +1305,35 @@ export default function DashboardPage() {
                                       : topPriority.bucket === "DUE SOON"
                                       ? "Best next action on the board"
                                       : topPriority.bucket === "READY TO FILE"
-                                      ? "Prepared and ready to submit"
+                                      ? "Ready to submit"
                                       : "Coming up next"}
                                   </span>
                                 </div>
-                                <div className="mt-3 inline-flex items-center rounded-full border border-red-400/20 bg-red-500/10 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-red-200">
-                                  ⚠ HIGHEST RISK IF IGNORED
-                                </div>
 
                                 <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-300">
-                                  This is the filing most likely to create risk or require attention first. Use the dashboard to decide what to do next, then use the filings page for the full working list.
+                                  This is the next filing to clear. Handle this first, then come back to the queue below.
                                 </p>
+
+                                {topPriorityRisk && (
+                                  <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-slate-300">
+                                    <span className={`h-2 w-2 rounded-full ${topPriorityRisk.dotClass}`} />
+                                    {topPriorityRisk.detail}
+                                  </div>
+                                )}
                               </div>
                             </div>
                           </div>
 
                           <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
                             <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
-                              PRIORITY SNAPSHOT
+                              ACTION SNAPSHOT
                             </div>
 
                             <div className="mt-4 grid gap-3">
                               <PriorityMiniStat label="Status" value={topPriority.bucket} />
-                              <PriorityMiniStat label="Entity" value={topPriority.company} />
+                              <PriorityMiniStat label="Risk" value={topPriorityRisk ? `${topPriorityRisk.score} • ${topPriorityRisk.label}` : "—"} />
                               <PriorityMiniStat label="Timeline" value={topPriority.subtitle} />
+                              <PriorityMiniStat label="Why it matters" value={topPriorityRisk ? topPriorityRisk.detail : "No active risk"} />
                             </div>
 
                             <div className="mt-5 flex flex-col gap-3">
@@ -1134,7 +1341,7 @@ export default function DashboardPage() {
                                 href="/filings"
                                 className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 hover:bg-white/10"
                               >
-                                Open Filings
+                                Open Filing Queue
                               </Link>
                               <button
                                 type="button"
@@ -1150,17 +1357,34 @@ export default function DashboardPage() {
                     )}
 
                     {!loading && !topPriority && (
-                      <div className="mt-10 rounded-3xl border border-white/10 bg-white/[0.03] px-5 py-8 text-sm text-slate-400">
-                        No filings yet. Finish onboarding or seed starter filings to populate the dashboard.
+                      <div className="mt-10 rounded-3xl border border-white/10 bg-white/[0.03] px-5 py-8">
+                        <div className="text-lg font-semibold text-white">No filings yet</div>
+                        <div className="mt-2 text-sm text-slate-400">
+                          Finish setup, add your first filing, or seed starter compliance work to bring this dashboard to life.
+                        </div>
+                        <div className="mt-5 flex flex-wrap gap-3">
+                          <Link
+                            href="/filings"
+                            className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.18)] transition hover:from-cyan-300 hover:to-blue-400"
+                          >
+                            Add First Filing
+                          </Link>
+                          <Link
+                            href={complianceSetupHref}
+                            className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
+                          >
+                            Run Compliance Setup
+                          </Link>
+                        </div>
                       </div>
                     )}
 
                     <div className="mt-10 space-y-8">
                       <div className="flex items-center justify-between">
                         <div>
-                          <div className="text-sm font-semibold text-white">Work Queue</div>
+                          <div className="text-sm font-semibold text-white">Your Filing Queue</div>
                           <div className="mt-1 text-sm text-slate-400">
-                            Work through these in order. This is your execution list.
+                            Work these in order: overdue, due soon, then ready to file.
                           </div>
                         </div>
                         <Link
@@ -1172,7 +1396,7 @@ export default function DashboardPage() {
                       </div>
 
                       {prioritizedActionItems.length === 0 ? (
-                        <div className="rounded-3xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(6,78,59,0.18),rgba(4,47,46,0.06),rgba(255,255,255,0.02))] px-6 py-6 shadow-[0_20px_60px_rgba(6,78,59,0.12)]">
+                        <div className="rounded-3xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(6,78,59,0.12),rgba(4,47,46,0.06),rgba(255,255,255,0.02))] px-6 py-6 shadow-[0_20px_60px_rgba(6,78,59,0.12)]">
                           <div className="flex items-start gap-4">
                             <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-emerald-400/20 bg-emerald-500/15 text-emerald-300">
                               <CheckCircle2 size={20} />
@@ -1180,7 +1404,7 @@ export default function DashboardPage() {
                             <div>
                               <div className="text-lg font-semibold text-white">All clear</div>
                               <div className="mt-2 max-w-2xl text-sm leading-7 text-slate-300">
-                                Everything urgent is under control right now. Future deadlines stay on the filings page until they need attention.
+                                Everything urgent is under control right now. Upcoming deadlines stay quiet until they need action.
                               </div>
                             </div>
                           </div>
@@ -1192,10 +1416,10 @@ export default function DashboardPage() {
                               <div>
                                 <div className="text-sm font-semibold text-white">Prioritized queue</div>
                                 <div className="mt-1 text-sm text-slate-400">
-                                  Overdue first, then due soon, then ready to file.
+                                  Sorted by highest consequence and nearest deadline.
                                 </div>
                               </div>
-                              <div className="rounded-full border border-cyan-300/15 bg-cyan-400/10 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-cyan-200">
+                              <div className="rounded-full border border-cyan-300/15 bg-cyan-400/7 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-cyan-200">
                                 {prioritizedActionItems.length} SHOWN
                               </div>
                             </div>
@@ -1286,7 +1510,7 @@ export default function DashboardPage() {
                             <div>
                               <div className="text-sm font-semibold text-white">Coming Up</div>
                               <div className="mt-1 text-sm text-slate-400">
-                                Not urgent yet — these will move into your queue soon.
+                                Not urgent yet. These move into the queue as deadlines get closer.
                               </div>
                             </div>
                             <Link
@@ -1403,7 +1627,43 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
-    </main>
+      </main>
+    </>
+  );
+}
+
+function SmartInsightCard({
+  label,
+  value,
+  helper,
+}: {
+  label: string;
+  value: string;
+  helper: string;
+}) {
+  return (
+    <div className="rounded-3xl border border-white/10 bg-white/[0.028] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</div>
+      <div className="mt-2 text-lg font-semibold text-white">{value}</div>
+      <div className="mt-1 text-sm leading-6 text-slate-400">{helper}</div>
+    </div>
+  );
+}
+
+function DashboardSkeleton() {
+  return (
+    <div className="mt-8 space-y-6">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div
+            key={index}
+            className="h-36 animate-pulse rounded-3xl border border-white/10 bg-white/[0.035]"
+          />
+        ))}
+      </div>
+      <div className="h-64 animate-pulse rounded-[32px] border border-white/10 bg-white/[0.035]" />
+      <div className="h-72 animate-pulse rounded-3xl border border-white/10 bg-white/[0.03]" />
+    </div>
   );
 }
 
@@ -1438,30 +1698,104 @@ function PriorityMiniStat({
   );
 }
 
+
+
+function getRiskMeta(bucket: DashboardBucket) {
+  switch (bucket) {
+    case "OVERDUE":
+      return {
+        score: "96",
+        label: "Critical",
+        detail: "High penalty risk if this stays open",
+        pillClass: "border-red-400/20 bg-red-500/12 text-red-200",
+        dotClass: "bg-red-400",
+      };
+    case "DUE SOON":
+      return {
+        score: "78",
+        label: "High",
+        detail: "Deadline is inside the action window",
+        pillClass: "border-yellow-300/20 bg-yellow-400/12 text-yellow-100",
+        dotClass: "bg-yellow-300",
+      };
+    case "READY TO FILE":
+      return {
+        score: "58",
+        label: "Controlled",
+        detail: "Prepared and ready for final filing",
+        pillClass: "border-cyan-300/20 bg-cyan-400/12 text-cyan-100",
+        dotClass: "bg-cyan-300",
+      };
+    case "UPCOMING":
+      return {
+        score: "29",
+        label: "Low",
+        detail: "Low pressure, prepare when ready",
+        pillClass: "border-blue-300/20 bg-blue-500/12 text-blue-100",
+        dotClass: "bg-blue-300",
+      };
+    case "FILED":
+      return {
+        score: "0",
+        label: "Resolved",
+        detail: "No active risk",
+        pillClass: "border-white/10 bg-white/5 text-slate-300",
+        dotClass: "bg-slate-300",
+      };
+  }
+}
+
+function getWorkspaceHealthTone(attentionCount: number) {
+  if (attentionCount === 0) {
+    return {
+      title: "Healthy workspace",
+      detail: "No urgent filings are pressuring the queue right now.",
+      pillClass: "border-emerald-400/20 bg-emerald-500/10 text-emerald-200",
+      dotClass: "bg-emerald-300",
+    };
+  }
+
+  if (attentionCount <= 3) {
+    return {
+      title: "Watch list",
+      detail: "A small number of filings need active attention.",
+      pillClass: "border-yellow-300/20 bg-yellow-400/10 text-yellow-100",
+      dotClass: "bg-yellow-300",
+    };
+  }
+
+  return {
+    title: "Pressure building",
+    detail: "The queue has multiple high-urgency items in play.",
+    pillClass: "border-red-400/20 bg-red-500/10 text-red-200",
+    dotClass: "bg-red-400",
+  };
+}
+
 function getTopCardStyle(status: DashboardBucket) {
   switch (status) {
     case "OVERDUE":
       return {
         wrapper:
-          "border border-red-400/15 bg-[linear-gradient(135deg,rgba(127,29,29,0.18),rgba(69,10,10,0.08),rgba(0,0,0,0))] shadow-[0_0_0_1px_rgba(248,113,113,0.04),0_20px_50px_rgba(127,29,29,0.18)]",
+          "border border-red-400/15 bg-[linear-gradient(135deg,rgba(127,29,29,0.12),rgba(69,10,10,0.05),rgba(0,0,0,0))] shadow-[0_0_0_1px_rgba(248,113,113,0.04),0_20px_50px_rgba(127,29,29,0.12)]",
         iconWrap: "border-red-400/20 bg-red-500/15 text-red-400",
       };
     case "DUE SOON":
       return {
         wrapper:
-          "border border-yellow-300/15 bg-[linear-gradient(135deg,rgba(202,138,4,0.18),rgba(120,53,15,0.08),rgba(0,0,0,0))] shadow-[0_0_0_1px_rgba(253,224,71,0.04),0_20px_50px_rgba(120,53,15,0.14)]",
-        iconWrap: "border-yellow-300/20 bg-yellow-400/15 text-yellow-300",
+          "border border-yellow-300/15 bg-[linear-gradient(135deg,rgba(202,138,4,0.12),rgba(120,53,15,0.05),rgba(0,0,0,0))] shadow-[0_0_0_1px_rgba(253,224,71,0.04),0_20px_50px_rgba(120,53,15,0.14)]",
+        iconWrap: "border-yellow-300/20 bg-yellow-400/10 text-yellow-300",
       };
     case "READY TO FILE":
       return {
         wrapper:
-          "border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(6,78,59,0.18),rgba(4,47,46,0.08),rgba(0,0,0,0))] shadow-[0_0_0_1px_rgba(52,211,153,0.04),0_20px_50px_rgba(6,78,59,0.16)]",
+          "border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(6,78,59,0.12),rgba(4,47,46,0.05),rgba(0,0,0,0))] shadow-[0_0_0_1px_rgba(52,211,153,0.04),0_20px_50px_rgba(6,78,59,0.16)]",
         iconWrap: "border-emerald-400/20 bg-emerald-500/15 text-emerald-400",
       };
     case "UPCOMING":
       return {
         wrapper:
-          "border border-blue-400/15 bg-[linear-gradient(135deg,rgba(30,58,138,0.18),rgba(15,23,42,0.08),rgba(0,0,0,0))] shadow-[0_0_0_1px_rgba(96,165,250,0.04),0_20px_50px_rgba(30,58,138,0.14)]",
+          "border border-blue-400/15 bg-[linear-gradient(135deg,rgba(30,58,138,0.12),rgba(15,23,42,0.08),rgba(0,0,0,0))] shadow-[0_0_0_1px_rgba(96,165,250,0.04),0_20px_50px_rgba(30,58,138,0.14)]",
         iconWrap: "border-blue-400/20 bg-blue-500/15 text-blue-300",
       };
     case "FILED":
@@ -1526,12 +1860,19 @@ function SidebarNavItem({
     <Link
       href={href}
       title={collapsed ? label : undefined}
-      className={`group relative flex items-center ${collapsed ? "justify-center px-2 py-3" : "gap-3 px-3 py-3"} rounded-2xl border transition ${
+      className={`group relative flex items-center overflow-hidden ${collapsed ? "justify-center px-2 py-3" : "gap-3 px-3 py-3"} rounded-2xl border transition-all duration-200 ${
         isActive
-          ? "border-cyan-300/20 bg-cyan-400/10 text-white shadow-[0_0_20px_rgba(34,211,238,0.08)]"
+          ? "border-cyan-300/20 bg-[linear-gradient(90deg,rgba(34,211,238,0.14),rgba(255,255,255,0.03))] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_10px_24px_rgba(34,211,238,0.08)]"
           : "border-transparent text-slate-300 hover:border-white/10 hover:bg-white/[0.04] hover:text-white"
       }`}
     >
+      {isActive && (
+        <>
+          <div className="absolute inset-y-1 left-0 w-[3px] rounded-full bg-cyan-300 shadow-[0_0_14px_rgba(34,211,238,0.65)]" />
+          {!collapsed && <div className="absolute inset-y-0 left-0 w-16 bg-[radial-gradient(circle_at_left,rgba(34,211,238,0.12),transparent_70%)]" />}
+        </>
+      )}
+
       <Icon size={18} className={isActive ? "text-cyan-200" : "text-slate-400 group-hover:text-slate-200"} />
 
       {!collapsed && (
@@ -1548,8 +1889,6 @@ function SidebarNavItem({
           )}
         </>
       )}
-
-      {isActive && !collapsed && <div className="absolute inset-y-2 left-0 w-[3px] rounded-full bg-cyan-300" />}
     </Link>
   );
 }
@@ -1570,7 +1909,7 @@ function MobileNavPill({
       href={href}
       className={`whitespace-nowrap rounded-full border px-4 py-2 text-sm transition ${
         isActive
-          ? "border-cyan-300/20 bg-cyan-400/10 text-cyan-100"
+          ? "border-cyan-300/20 bg-cyan-400/7 text-cyan-100"
           : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
       }`}
     >
@@ -1624,7 +1963,7 @@ function StatCard({
   }[accent];
 
   return (
-    <div className={`h-full rounded-3xl border p-5 shadow-[0_18px_50px_rgba(0,0,0,0.14)] transition hover:-translate-y-[2px] ${accentMap}`}>
+    <div className={`h-full rounded-3xl border p-5 shadow-[0_10px_28px_rgba(0,0,0,0.1)] transition hover:-translate-y-[1px] hover:border-cyan-300/14 ${accentMap}`}>
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-400">{label}</div>

@@ -1,33 +1,33 @@
+
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { motion, AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import Papa from "papaparse";
+import {
+  ArrowRight,
+  CheckCircle2,
+  ChevronLeft,
+  FileSpreadsheet,
+  Sparkles,
+  Upload,
+} from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { seedWorkspaceFromOnboarding } from "./actions/seed-onboarding";
-import { buildSuggestedFilings } from "@/lib/compliance-engine";
-
-import type { SuggestedFiling } from "@/lib/compliance-engine";
-
+import { buildAllSuggestedFilings } from "@/lib/compliance-engine";
+import type { ComplianceProfile } from "@/lib/compliance-rules";
 import {
   complianceRules,
   workflowTemplates,
 } from "@/lib/compliance-rules";
 
-import type {
-  ComplianceProfile,
-  ComplianceRule,
-  WorkflowTemplate,
-} from "@/lib/compliance-rules";
-
 type AccountType = "business_owner" | "accounting_firm" | null;
-type IntakeMethod = "manual" | "csv" | "later" | null;
-type Step = 1 | 2 | 3 | 4 | "loading" | 5;
+type IntakeMethod = "manual" | "csv";
+type Step = 1 | 2 | 3 | "loading" | 4;
 
 type ServiceKey = "payroll" | "sales_tax" | "annual_report" | "w2_1099";
 type TaxReturnKey = "f1040" | "f1120" | "f1120s" | "f1065";
-
 type FilingFrequency = "monthly" | "quarterly" | "annual";
 
 type ClientServiceMap = Record<ServiceKey, boolean>;
@@ -53,14 +53,18 @@ type CsvImportedRow = {
   salesTaxFrequency: FilingFrequency;
 };
 
+type FilingPreview = {
+  filingName: string;
+  dueDate: string;
+  jurisdictionCode: string;
+};
+
 type WorkspacePreviewSummary = {
   clients: number;
   workflows: number;
-  filings: {
-    filingName: string;
-    dueDate: string;
-    jurisdictionCode: string;
-  }[];
+  filings: FilingPreview[];
+  primaryFilings: FilingPreview[];
+  supportingFilings: FilingPreview[];
 };
 
 const US_STATES = [
@@ -114,7 +118,7 @@ const US_STATES = [
   { value: "WV", label: "West Virginia" },
   { value: "WI", label: "Wisconsin" },
   { value: "WY", label: "Wyoming" },
-];
+] as const;
 
 const ENTITY_TYPE_OPTIONS = [
   { value: "Individual", label: "Individual" },
@@ -125,21 +129,7 @@ const ENTITY_TYPE_OPTIONS = [
   { value: "Partnership", label: "Partnership" },
   { value: "Nonprofit", label: "Nonprofit" },
   { value: "Trust", label: "Trust" },
-];
-
-const defaultServices = (): ClientServiceMap => ({
-  payroll: false,
-  sales_tax: false,
-  annual_report: false,
-  w2_1099: false,
-});
-
-const defaultTaxReturns = (): ClientTaxReturnMap => ({
-  f1040: false,
-  f1120: false,
-  f1120s: false,
-  f1065: false,
-});
+] as const;
 
 const serviceLabels: Record<ServiceKey, string> = {
   payroll: "Payroll",
@@ -155,21 +145,38 @@ const taxReturnLabels: Record<TaxReturnKey, string> = {
   f1065: "1065",
 };
 
+function defaultServices(): ClientServiceMap {
+  return {
+    payroll: false,
+    sales_tax: false,
+    annual_report: false,
+    w2_1099: false,
+  };
+}
+
+function defaultTaxReturns(): ClientTaxReturnMap {
+  return {
+    f1040: false,
+    f1120: false,
+    f1120s: false,
+    f1065: false,
+  };
+}
+
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
-
   if (error && typeof error === "object") {
     const maybeError = error as Record<string, unknown>;
     return (
       (typeof maybeError.message === "string" && maybeError.message) ||
       (typeof maybeError.details === "string" && maybeError.details) ||
       (typeof maybeError.hint === "string" && maybeError.hint) ||
-      (typeof maybeError.error_description === "string" && maybeError.error_description) ||
+      (typeof maybeError.error_description === "string" &&
+        maybeError.error_description) ||
       "Something went wrong while generating your workspace."
     );
   }
-
   return "Something went wrong while generating your workspace.";
 }
 
@@ -187,36 +194,26 @@ function mapPlanToOnboarding(value: string | null): AccountType {
   return null;
 }
 
-function getLockedInitialStep(accountType: AccountType): Step {
-  if (accountType === "accounting_firm") return 2;
-  if (accountType === "business_owner") return 1;
-  return 1;
-}
-
 function getDefaultTaxReturnsForEntity(entityType: string): ClientTaxReturnMap {
   const normalized = entityType.trim().toLowerCase();
 
   if (normalized.includes("s corp")) {
     return { f1040: false, f1120: false, f1120s: true, f1065: false };
   }
-
   if (normalized.includes("c corp")) {
     return { f1040: false, f1120: true, f1120s: false, f1065: false };
   }
-
   if (normalized.includes("partnership")) {
     return { f1040: false, f1120: false, f1120s: false, f1065: true };
   }
-
   if (
     normalized.includes("individual") ||
     normalized.includes("single-member") ||
-    normalized == "llc" ||
+    normalized === "llc" ||
     normalized.includes("sole prop")
   ) {
     return { f1040: true, f1120: false, f1120s: false, f1065: false };
   }
-
   return defaultTaxReturns();
 }
 
@@ -242,32 +239,99 @@ function toComplianceProfile(form: SetupForm): ComplianceProfile {
   };
 }
 
+function normalizeSalesTaxFrequency(
+  value?: string,
+  fallback: FilingFrequency = "quarterly",
+): FilingFrequency {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "monthly" || normalized === "quarterly" || normalized === "annual") {
+    return normalized;
+  }
+  return fallback;
+}
+
+function toBoolean(value?: string) {
+  return /^(y|yes|true|1|x|on)$/i.test(String(value || "").trim());
+}
+
+function formatDueDate(value: string) {
+  return new Date(`${value}T00:00:00`).toLocaleDateString();
+}
+
+function splitPreviewFilings(
+  filings: any[],
+  taxReturns: ClientTaxReturnMap | null,
+): {
+  primaryFilings: FilingPreview[];
+  supportingFilings: FilingPreview[];
+  filings: FilingPreview[];
+} {
+  const isPrimaryFiling = (filing: any) => {
+    const name = String(filing.filingName || "").toLowerCase();
+
+    const isIncomeTax =
+      name.includes("1040") ||
+      name.includes("1120") ||
+      name.includes("1120s") ||
+      name.includes("1120-s") ||
+      name.includes("1120 s") ||
+      name.includes("1065");
+
+    const isPayroll =
+      name.includes("941") ||
+      name.includes("940") ||
+      name.includes("nys-45") ||
+      name.includes("payroll");
+
+    const isSalesTax = name.includes("sales tax");
+
+    return isIncomeTax || isPayroll || isSalesTax;
+  };
+
+  const primaryCandidates = filings.filter(isPrimaryFiling);
+  const supportingCandidates = filings.filter(
+    (filing: any) => !primaryCandidates.includes(filing),
+  );
+
+  const dedupeAndMap = (items: any[]): FilingPreview[] => {
+    const seen = new Set<string>();
+    return items
+      .filter((filing: any) => {
+        const key = `${filing.filingName}-${filing.dueDate}-${filing.jurisdictionCode}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map((filing: any) => ({
+        filingName: filing.filingName,
+        dueDate: filing.dueDate,
+        jurisdictionCode: filing.jurisdictionCode,
+      }));
+  };
+
+  const primaryFilings = dedupeAndMap(primaryCandidates).slice(0, 4);
+  const supportingFilings = dedupeAndMap(supportingCandidates).slice(0, 4);
+
+  return {
+    primaryFilings,
+    supportingFilings,
+    filings: [...primaryFilings, ...supportingFilings],
+  };
+}
+
+
 export default function OnboardingPage() {
   const router = useRouter();
   const supabase = createClient();
 
   const [signupType, setSignupType] = useState<AccountType>(null);
   const [signupWorkspaceName, setSignupWorkspaceName] = useState("");
+  const [step, setStep] = useState<Step>(1);
+  const [accountType, setAccountType] = useState<AccountType>(null);
+  const [intakeMethod, setIntakeMethod] = useState<IntakeMethod>("manual");
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const params = new URLSearchParams(window.location.search);
-    const resolvedSignupType =
-      mapSignupTypeToOnboarding(params.get("type")) ||
-      mapPlanToOnboarding(params.get("plan"));
-
-    setSignupType(resolvedSignupType);
-    setSignupWorkspaceName(params.get("workspace")?.trim() || "");
-  }, []);
-
-  const [step, setStep] = useState<Step>(() => getLockedInitialStep(signupType));
-  const [accountType, setAccountType] = useState<AccountType>(signupType);
-  const [firmName, setFirmName] = useState(
-    signupType === "accounting_firm" ? signupWorkspaceName : ""
-  );
+  const [firmName, setFirmName] = useState("");
   const [clientCount, setClientCount] = useState("");
-  const [intakeMethod, setIntakeMethod] = useState<IntakeMethod>(null);
 
   const [manualClient, setManualClient] = useState<SetupForm>({
     name: "",
@@ -279,7 +343,7 @@ export default function OnboardingPage() {
   });
 
   const [businessSetup, setBusinessSetup] = useState<SetupForm>({
-    name: signupType === "business_owner" ? signupWorkspaceName : "",
+    name: "",
     state: "",
     entityType: "",
     services: defaultServices(),
@@ -289,165 +353,67 @@ export default function OnboardingPage() {
 
   const [csvText, setCsvText] = useState("");
   const [csvRows, setCsvRows] = useState<CsvImportedRow[]>([]);
-
   const [firmId, setFirmId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [showFinalCta, setShowFinalCta] = useState(false);
-  const [lockedAccountType, setLockedAccountType] = useState(Boolean(signupType));
-  const [previewRules, setPreviewRules] = useState<ComplianceRule[]>([]);
-  const [previewTemplates, setPreviewTemplates] = useState<WorkflowTemplate[]>([]);
+  const [previewRules, setPreviewRules] = useState<any[]>(complianceRules as any[]);
+  const [previewTemplates, setPreviewTemplates] = useState<any[]>(workflowTemplates as any[]);
   const [previewConfigLoaded, setPreviewConfigLoaded] = useState(false);
-
-  const parsedClientCount = Math.max(0, Number.parseInt(clientCount || "0", 10) || 0);
+  const [showGeneratingCue, setShowGeneratingCue] = useState(false);
+  const [checkoutStarting, setCheckoutStarting] = useState(false);
 
   useEffect(() => {
-    if (!signupType) {
-      setLockedAccountType(false);
+    if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
+    const resolvedSignupType =
+      mapSignupTypeToOnboarding(params.get("type")) ||
+      mapPlanToOnboarding(params.get("plan"));
+
+    const workspace = params.get("workspace")?.trim() || "";
+
+    setSignupType(resolvedSignupType);
+    setSignupWorkspaceName(workspace);
+
+    if (resolvedSignupType === "accounting_firm") {
+      setAccountType("accounting_firm");
+      setFirmName(workspace);
+      setStep(1);
       return;
     }
 
-    setAccountType(signupType);
-    setLockedAccountType(true);
-    setStep(getLockedInitialStep(signupType));
-
-    if (signupType === "accounting_firm") {
-      if (signupWorkspaceName) {
-        setFirmName((current) => current || signupWorkspaceName);
-      }
+    if (resolvedSignupType === "business_owner") {
+      setAccountType("business_owner");
+      setBusinessSetup((current) => ({ ...current, name: current.name || workspace }));
+      setStep(2);
       return;
     }
 
-    if (signupWorkspaceName) {
-      setBusinessSetup((current) => ({
-        ...current,
-        name: current.name || signupWorkspaceName,
-      }));
-    }
-  }, [signupType, signupWorkspaceName]);
-
-  useEffect(() => {
-    let ignore = false;
-
-    const redirectIfOnboarded = async () => {
-      const params = new URLSearchParams(window.location.search);
-      const allowRevisit = params.get("edit") === "true";
-
-      if (allowRevisit) {
-        return;
-      }
-
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (ignore) return;
-
-      const user = session?.user ?? null;
-
-      if (!user) {
-        return;
-      }
-
-      const preferredFirmId =
-        typeof user.user_metadata?.firm_id === "string"
-          ? user.user_metadata.firm_id
-          : typeof user.user_metadata?.workspace_id === "string"
-            ? user.user_metadata.workspace_id
-            : null;
-
-      const { data: memberships, error: membershipError } = await supabase
-        .from("firm_members")
-        .select("firm_id")
-        .eq("user_id", user.id);
-
-      if (ignore) return;
-
-      if (membershipError) {
-        console.error("Onboarding membership lookup failed:", membershipError);
-        return;
-      }
-
-      const membershipIds = (memberships || []).map((membership) => membership.firm_id);
-      const resolvedFirmId =
-        (preferredFirmId && membershipIds.includes(preferredFirmId) ? preferredFirmId : null) ||
-        membershipIds[0] ||
-        preferredFirmId ||
-        null;
-
-      if (!resolvedFirmId) {
-        return;
-      }
-
-      const { data: firm, error: firmError } = await supabase
-        .from("firms")
-        .select("onboarding_completed")
-        .eq("id", resolvedFirmId)
-        .maybeSingle();
-
-      if (ignore) return;
-
-      if (firmError) {
-        console.error("Onboarding firm lookup failed:", firmError);
-        return;
-      }
-
-      if (firm?.onboarding_completed) {
-        router.replace("/dashboard");
-        router.refresh();
-      }
-    };
-
-    redirectIfOnboarded();
-
-    return () => {
-      ignore = true;
-    };
-  }, [router, supabase]);
-
-  useEffect(() => {
-    if (step !== 5) {
-      setShowFinalCta(false);
-      return;
-    }
-
-    const timer = window.setTimeout(() => setShowFinalCta(true), 350);
-    return () => window.clearTimeout(timer);
-  }, [step]);
+    setStep(1);
+  }, []);
 
   useEffect(() => {
     let ignore = false;
 
     async function loadPreviewConfig() {
       try {
-        const [{ data: rulesData, error: rulesError }, { data: templatesData, error: templatesError }] =
-          await Promise.all([
-            supabase.from("compliance_rules").select("*").eq("active", true),
-            supabase.from("workflow_templates").select("*").eq("active", true),
-          ]);
+        const [{ data: rulesData }, { data: templatesData }] = await Promise.all([
+          supabase.from("compliance_rules").select("*").eq("active", true),
+          supabase.from("workflow_templates").select("*").eq("active", true),
+        ]);
 
         if (ignore) return;
 
-        if (rulesError) {
-          console.error("Preview compliance rule lookup failed:", rulesError);
+        if (Array.isArray(rulesData) && rulesData.length > 0) {
+          setPreviewRules(rulesData as any[]);
         }
-
-        if (templatesError) {
-          console.error("Preview workflow template lookup failed:", templatesError);
+        if (Array.isArray(templatesData) && templatesData.length > 0) {
+          setPreviewTemplates(templatesData as any[]);
         }
-
-        setPreviewRules(((rulesData || []) as ComplianceRule[]).filter(Boolean));
-        setPreviewTemplates(((templatesData || []) as WorkflowTemplate[]).filter(Boolean));
       } catch (error) {
-        if (!ignore) {
-          console.error("Preview configuration load failed:", error);
-          setPreviewRules([]);
-          setPreviewTemplates([]);
-        }
+        console.error("Preview configuration load failed:", error);
       } finally {
-        if (!ignore) {
-          setPreviewConfigLoaded(true);
-        }
+        if (!ignore) setPreviewConfigLoaded(true);
       }
     }
 
@@ -458,15 +424,13 @@ export default function OnboardingPage() {
     };
   }, [supabase]);
 
-  const totalSteps =
-    accountType === "accounting_firm" ? (lockedAccountType ? 4 : 5) : 2;
-  const currentStepDisplay = getCurrentStepDisplay(step, accountType, lockedAccountType);
-  const progress = Math.min((currentStepDisplay / totalSteps) * 100, 100);
+  const parsedClientCount = Math.max(0, Number.parseInt(clientCount || "0", 10) || 0);
+  const includedCsvRows = csvRows.filter((row) => row.include);
+  const hasValidCsvImport = includedCsvRows.length > 0;
 
-  const canContinueStep1 = Boolean(accountType);
+  const canContinueAccountSelection = Boolean(accountType);
   const canContinueFirmDetails =
     firmName.trim().length > 0 && clientCount.trim().length > 0;
-  const canContinueIntakeChoice = Boolean(intakeMethod);
 
   const manualClientSelectionCount =
     Object.values(manualClient.services).filter(Boolean).length +
@@ -478,162 +442,214 @@ export default function OnboardingPage() {
     manualClientSelectionCount > 0;
 
   const businessSelectionCount =
-    Object.values(businessSetup.services).filter(Boolean).length +
-    Object.values(businessSetup.taxReturns).filter(Boolean).length;
+    Object.values(businessSetup.services).filter(Boolean).length;
   const canFinishBusinessSetup =
     businessSetup.name.trim().length > 0 &&
     businessSetup.state.trim().length === 2 &&
     businessSetup.entityType.trim().length > 0 &&
     businessSelectionCount > 0;
 
-  const includedCsvRows = csvRows.filter((row) => row.include);
-  const hasValidCsvImport = includedCsvRows.length > 0;
-
   const workspacePreview = useMemo<WorkspacePreviewSummary>(() => {
     if (!previewRules.length || !previewTemplates.length) {
-      return { clients: 0, workflows: 0, filings: [] };
-    }
-
-    if (accountType === "accounting_firm") {
-      const count =
-        intakeMethod === "manual"
-          ? 1
-          : intakeMethod === "csv"
-            ? includedCsvRows.length
-            : 0;
-
-      const filings =
-        intakeMethod === "manual"
-          ? buildSuggestedFilings({
-              profile: toComplianceProfile(manualClient),
-              rules: previewRules,
-              templates: previewTemplates,
-            })
-          : includedCsvRows.flatMap((row) =>
-              buildSuggestedFilings({
-                profile: toComplianceProfile({
-                  name: row.client_name,
-                  state: row.state,
-                  entityType: row.entity_type,
-                  services: row.services,
-                  taxReturns: row.taxReturns,
-                  salesTaxFrequency: row.salesTaxFrequency,
-                }),
-                rules: previewRules,
-                templates: previewTemplates,
-              })
-            );
-
       return {
-        clients: count,
-        workflows: filings.length,
-        filings: filings.slice(0, 5).map((filing) => ({
-          filingName: filing.filingName,
-          dueDate: filing.dueDate,
-          jurisdictionCode: filing.jurisdictionCode,
-        })),
+        clients: 0,
+        workflows: 0,
+        filings: [],
+        primaryFilings: [],
+        supportingFilings: [],
       };
     }
 
     if (accountType === "business_owner") {
-      const filings = buildSuggestedFilings({
+      const filings = buildAllSuggestedFilings({
         profile: toComplianceProfile(businessSetup),
         rules: previewRules,
         templates: previewTemplates,
+        payrollEvents: [],
       });
+
+      const split = splitPreviewFilings(filings, null);
 
       return {
         clients: businessSetup.name.trim() ? 1 : 0,
         workflows: filings.length,
-        filings: filings.slice(0, 5).map((filing) => ({
-          filingName: filing.filingName,
-          dueDate: filing.dueDate,
-          jurisdictionCode: filing.jurisdictionCode,
-        })),
+        filings: split.filings,
+        primaryFilings: split.primaryFilings,
+        supportingFilings: split.supportingFilings,
       };
     }
 
-    return { clients: 0, workflows: 0, filings: [] };
+    if (intakeMethod === "csv") {
+      const filings = includedCsvRows.flatMap((row) =>
+        buildAllSuggestedFilings({
+          profile: toComplianceProfile({
+            name: row.client_name,
+            state: row.state,
+            entityType: row.entity_type,
+            services: row.services,
+            taxReturns: row.taxReturns,
+            salesTaxFrequency: row.salesTaxFrequency,
+          }),
+          rules: previewRules,
+          templates: previewTemplates,
+            payrollEvents: [],
+          }),
+      );
+
+      const split = splitPreviewFilings(filings, null);
+
+      return {
+        clients: includedCsvRows.length,
+        workflows: filings.length,
+        filings: split.filings,
+        primaryFilings: split.primaryFilings,
+        supportingFilings: split.supportingFilings,
+      };
+    }
+
+    const filings = buildAllSuggestedFilings({
+      profile: toComplianceProfile(manualClient),
+      rules: previewRules,
+      templates: previewTemplates,
+    });
+
+    const split = splitPreviewFilings(filings, null);
+
+    return {
+      clients: manualClient.name.trim() ? 1 : 0,
+      workflows: filings.length,
+      filings: split.filings,
+      primaryFilings: split.primaryFilings,
+      supportingFilings: split.supportingFilings,
+    };
   }, [
     accountType,
-    intakeMethod,
-    includedCsvRows,
-    manualClient,
     businessSetup,
+    includedCsvRows,
+    intakeMethod,
+    manualClient,
     previewRules,
     previewTemplates,
   ]);
 
-  function goForwardFromStep1() {
-    if (!accountType) return;
-    setSaveError(null);
+  const nextFiling = workspacePreview.filings[0] || null;
 
-    if (accountType === "business_owner") {
-      setStep(1);
+  const totalSteps = accountType === "business_owner" ? 2 : 3;
+  const currentStepDisplay =
+    step === "loading" ? totalSteps : step === 4 ? totalSteps : step;
+  const progress = Math.min((currentStepDisplay / totalSteps) * 100, 100);
+
+  function parseCsv(raw: string) {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      setCsvRows([]);
       return;
     }
 
-    setStep(2);
-  }
+    Papa.parse<Record<string, string>>(trimmed, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results: Papa.ParseResult<Record<string, string>>) => {
+        const parsed = (results.data || [])
+          .map((row: Record<string, string>, index: number) => {
+            const normalized = Object.fromEntries(
+              Object.entries(row).map(([key, value]) => [
+                key.trim().toLowerCase(),
+                String(value ?? "").trim(),
+              ]),
+            );
 
-  function goBackFromIntakeChoice() {
-    setSaveError(null);
+            const findValue = (...candidates: string[]) => {
+              const entry = Object.entries(normalized).find(([key]) =>
+                candidates.some((candidate) => key.includes(candidate)),
+              );
+              return entry?.[1] || "";
+            };
 
-    if (accountType === "business_owner") {
-      setStep(1);
-      return;
-    }
+            return {
+              id: `csv-${index + 1}`,
+              include: true,
+              client_name: findValue("client", "company", "name"),
+              state: findValue("state").toUpperCase(),
+              entity_type: findValue("entity", "type") || "Client",
+              services: {
+                payroll: toBoolean(findValue("payroll")),
+                sales_tax: toBoolean(findValue("sales tax", "sales_tax", "salestax")),
+                annual_report: toBoolean(findValue("annual report", "annual_report")),
+                w2_1099: toBoolean(findValue("1099", "w2", "w-2")),
+              },
+              taxReturns: (() => {
+                const genericIncomeTax = toBoolean(
+                  findValue("income tax", "income_tax", "tax return", "income"),
+                );
+                const inferred = genericIncomeTax
+                  ? getDefaultTaxReturnsForEntity(findValue("entity", "type"))
+                  : defaultTaxReturns();
 
-    setStep(2);
+                return {
+                  f1040: toBoolean(findValue("1040")) || inferred.f1040,
+                  f1120: toBoolean(findValue("1120")) || inferred.f1120,
+                  f1120s:
+                    toBoolean(findValue("1120s", "1120-s", "1120 s")) ||
+                    inferred.f1120s,
+                  f1065: toBoolean(findValue("1065")) || inferred.f1065,
+                };
+              })(),
+              salesTaxFrequency: normalizeSalesTaxFrequency(
+                findValue(
+                  "sales_tax_frequency",
+                  "sales tax frequency",
+                  "salestaxfrequency",
+                ),
+                "quarterly",
+              ),
+            } satisfies CsvImportedRow;
+          })
+          .filter((row: CsvImportedRow) => row.client_name.trim().length > 0);
+
+        setCsvRows(parsed);
+      },
+    });
   }
 
   async function ensureFirm() {
     if (firmId) return firmId;
-
-    if (!accountType || !intakeMethod) {
+    if (!accountType) {
       throw new Error("Missing onboarding selections.");
     }
 
-    try {
-      const result = await seedWorkspaceFromOnboarding({
-        accountType,
-        firmName:
-          accountType === "business_owner"
-            ? businessSetup.name.trim() || firmName
-            : firmName,
-        clientCount:
-          accountType === "business_owner"
-            ? 1
-            : intakeMethod === "later"
-              ? parsedClientCount
-              : 0,
-        intakeMethod,
-      });
+    const result = await seedWorkspaceFromOnboarding({
+      accountType,
+      firmName:
+        accountType === "business_owner"
+          ? businessSetup.name.trim() || signupWorkspaceName
+          : firmName.trim(),
+      clientCount:
+        accountType === "business_owner"
+          ? 1
+          : intakeMethod === "csv"
+            ? includedCsvRows.length || parsedClientCount || 1
+            : 1,
+      intakeMethod,
+    });
 
-      console.log("Firm created/updated:", result);
-
-      const resolvedFirmId = result.firmId || result.workspaceId;
-      setFirmId(resolvedFirmId);
-      return resolvedFirmId;
-    } catch (err) {
-      const message = getErrorMessage(err);
-      console.error("FULL FIRM ERROR:", err);
-      console.error("FULL FIRM ERROR MESSAGE:", message);
-      setSaveError(message);
-      throw new Error(message);
-    }
+    const resolvedFirmId = result.firmId || result.workspaceId;
+    setFirmId(resolvedFirmId);
+    return resolvedFirmId;
   }
 
   async function upsertComplianceProfileAndGenerateFilings(
     resolvedFirmId: string,
-    clientId: string,
-    form: SetupForm
+    clientId: string | null,
+    organizationId: string | null,
+    form: SetupForm,
   ) {
     const { data: profileId, error: profileError } = await supabase.rpc(
       "upsert_client_compliance_profile",
       {
         p_workspace_id: resolvedFirmId,
         p_client_id: clientId,
+        p_organization_id: organizationId,
         p_state_code: form.state.trim().toUpperCase(),
         p_entity_type: form.entityType.trim(),
         p_payroll_enabled: form.services.payroll,
@@ -646,58 +662,29 @@ export default function OnboardingPage() {
         p_tax_1120_enabled: form.taxReturns.f1120,
         p_tax_1120s_enabled: form.taxReturns.f1120s,
         p_tax_1065_enabled: form.taxReturns.f1065,
-      }
-    );
-
-    const suggestedFilings = buildSuggestedFilings({
-      profile: toComplianceProfile(form),
-      rules: complianceRules,
-      templates: workflowTemplates,
-    });
-
-    console.log("upsert_client_compliance_profile result:", {
-      firmId: resolvedFirmId,
-      clientId,
-      profileId,
-      profileError,
-      payload: {
-        state: form.state.trim().toUpperCase(),
-        entityType: form.entityType.trim(),
-        services: form.services,
-        taxReturns: form.taxReturns,
-        salesTaxFrequency: form.services.sales_tax ? form.salesTaxFrequency : null,
       },
-      engineSuggestedFilings: suggestedFilings,
-    });
+    );
 
     if (profileError || !profileId) {
       throw new Error(
         profileError?.message ||
           profileError?.details ||
           profileError?.hint ||
-          "Failed to save compliance profile."
+          "Failed to save compliance profile.",
       );
     }
 
-    const { data: filingsData, error: filingsError } = await supabase.rpc(
+    const { error: filingsError } = await supabase.rpc(
       "generate_filings_for_profile",
-      {
-        p_profile_id: profileId,
-      }
+      { p_profile_id: profileId },
     );
-
-    console.log("generate_filings_for_profile result:", {
-      profileId,
-      filingsData,
-      filingsError,
-    });
 
     if (filingsError) {
       throw new Error(
         filingsError?.message ||
           filingsError?.details ||
           filingsError?.hint ||
-          "Failed to generate filings from compliance profile."
+          "Failed to generate filings from compliance profile.",
       );
     }
   }
@@ -705,7 +692,7 @@ export default function OnboardingPage() {
   async function createClientRecord(
     resolvedFirmId: string,
     form: SetupForm,
-    source: "manual" | "import" = "manual"
+    source: "manual" | "import",
   ) {
     const normalizedName = form.name.trim().replace(/\s+/g, " ");
     const normalizedState = form.state.trim().toUpperCase();
@@ -722,7 +709,7 @@ export default function OnboardingPage() {
         String(client.client_name || "")
           .trim()
           .replace(/\s+/g, " ")
-          .toLowerCase() === normalizedName.toLowerCase()
+          .toLowerCase() === normalizedName.toLowerCase(),
     );
 
     let clientId: string;
@@ -747,279 +734,185 @@ export default function OnboardingPage() {
       clientId = client.id;
     }
 
-    await upsertComplianceProfileAndGenerateFilings(resolvedFirmId, clientId, {
-      ...form,
-      name: normalizedName,
-      state: normalizedState,
-    });
-
-    return clientId;
+    await upsertComplianceProfileAndGenerateFilings(
+      resolvedFirmId,
+      clientId,
+      null,
+      {
+        ...form,
+        name: normalizedName,
+        state: normalizedState,
+      },
+    );
   }
 
   async function finalizeBusinessOwnerManual() {
-  const resolvedFirmId = await ensureFirm();
-
-  // 1. Get the business organization (already created in seed file)
-  const { data: org, error: orgError } = await supabase
-    .from("organizations")
-    .select("id")
-    .eq("firm_id", resolvedFirmId)
-    .eq("organization_type", "business")
-    .maybeSingle();
-
-  if (orgError || !org) {
-    throw orgError || new Error("Business organization not found.");
-  }
-
-  // 2. Update organization with onboarding data
-  const { error: updateError } = await supabase
-    .from("organizations")
-    .update({
-      legal_name: businessSetup.name.trim(),
-      display_name: businessSetup.name.trim(),
-      state_code: businessSetup.state.trim().toUpperCase(),
-      entity_type: businessSetup.entityType.trim(),
-    })
-    .eq("id", org.id);
-
-  if (updateError) {
-    throw updateError;
-  }
-
-  // 3. Create compliance profile for ORGANIZATION (NOT client)
-  const { data: profileId, error: profileError } = await supabase.rpc(
-    "upsert_client_compliance_profile",
-    {
-      p_workspace_id: resolvedFirmId,
-      p_organization_id: org.id,   // 🔥 THIS IS THE FIX
-      p_client_id: null,
-      p_state_code: businessSetup.state.trim().toUpperCase(),
-      p_entity_type: businessSetup.entityType.trim(),
-      p_payroll_enabled: businessSetup.services.payroll,
-      p_sales_tax_enabled: businessSetup.services.sales_tax,
-      p_sales_tax_frequency: businessSetup.services.sales_tax
-        ? businessSetup.salesTaxFrequency
-        : null,
-      p_income_tax_enabled: hasSelectedTaxReturn(businessSetup.taxReturns),
-      p_annual_report_enabled: businessSetup.services.annual_report,
-      p_w2_1099_enabled: businessSetup.services.w2_1099,
-      p_tax_1040_enabled: businessSetup.taxReturns.f1040,
-      p_tax_1120_enabled: businessSetup.taxReturns.f1120,
-      p_tax_1120s_enabled: businessSetup.taxReturns.f1120s,
-      p_tax_1065_enabled: businessSetup.taxReturns.f1065,
-    }
-  );
-
-  if (profileError || !profileId) {
-    throw new Error("Failed to create business compliance profile.");
-  }
-
-  // 4. Generate filings
-  const { error: filingsError } = await supabase.rpc(
-    "generate_filings_for_profile",
-    {
-      p_profile_id: profileId,
-    }
-  );
-
-  if (filingsError) {
-    throw filingsError;
-  }
-
-  setStep(5);
-}
-  async function finalizeExploreFirst() {
-    await ensureFirm();
-    setStep(5);
-  }
-
-  async function finalizeManualClient() {
-    const resolvedFirmId = await ensureFirm();
-    await createClientRecord(resolvedFirmId, manualClient, "manual");
-    setStep(5);
-  }
-
-  async function finalizeCsvImport() {
     const resolvedFirmId = await ensureFirm();
 
-    for (const row of includedCsvRows) {
-      await createClientRecord(
-        resolvedFirmId,
-        {
-          name: row.client_name,
-          state: row.state,
-          entityType: row.entity_type,
-          services: row.services,
-          taxReturns: row.taxReturns,
-          salesTaxFrequency: row.salesTaxFrequency,
-        },
-        "import"
-      );
+    const { data: org, error: orgError } = await supabase
+      .from("organizations")
+      .select("id")
+      .eq("firm_id", resolvedFirmId)
+      .eq("organization_type", "business")
+      .maybeSingle();
+
+    if (orgError || !org) {
+      throw orgError || new Error("Business organization not found.");
     }
 
-    setStep(5);
+    const { error: updateError } = await supabase
+      .from("organizations")
+      .update({
+        legal_name: businessSetup.name.trim(),
+        display_name: businessSetup.name.trim(),
+        state_code: businessSetup.state.trim().toUpperCase(),
+        entity_type: businessSetup.entityType.trim(),
+      })
+      .eq("id", org.id);
+
+    if (updateError) throw updateError;
+
+    await upsertComplianceProfileAndGenerateFilings(
+      resolvedFirmId,
+      null,
+      org.id,
+      businessSetup,
+    );
   }
 
   async function generateWorkspace() {
     setSaveError(null);
     setSaving(true);
+    setShowGeneratingCue(true);
 
     try {
-      if (!accountType || !intakeMethod) {
+      if (!accountType) {
         throw new Error("Please complete onboarding first.");
       }
 
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      setStep("loading");
+
       if (accountType === "business_owner") {
-        if (intakeMethod === "later") {
-          setStep("loading");
-          await finalizeExploreFirst();
-          return;
+        if (!canFinishBusinessSetup) {
+          throw new Error("Enter your business details and choose at least one service.");
         }
-
-        if (intakeMethod === "manual") {
-          if (step !== 2) {
-            setStep(2);
-            return;
-          }
-
-          if (!canFinishBusinessSetup) {
-            throw new Error("Enter your business details and choose at least one service.");
-          }
-
-          setStep("loading");
-          await finalizeBusinessOwnerManual();
-          return;
-        }
-
-        throw new Error("Please choose how you want to get started.");
-      }
-
-      if (intakeMethod === "later") {
-        setStep("loading");
-        await finalizeExploreFirst();
-        return;
-      }
-
-      if (intakeMethod === "manual") {
-        if (step !== 4) {
-          setStep(4);
-          return;
-        }
-
-        if (!canFinishManualClient) {
-          throw new Error("Add one client and select at least one service.");
-        }
-        setStep("loading");
-        await finalizeManualClient();
+        await finalizeBusinessOwnerManual();
+        setStep(4);
         return;
       }
 
       if (intakeMethod === "csv") {
-        if (step !== 4) {
-          setStep(4);
-          return;
-        }
-
         if (!hasValidCsvImport) {
-          throw new Error("Upload or paste a CSV and choose at least one client row.");
+          throw new Error("Upload a CSV and keep at least one client selected.");
         }
-        setStep("loading");
-        await finalizeCsvImport();
+        const resolvedFirmId = await ensureFirm();
+        for (const row of includedCsvRows) {
+          await createClientRecord(
+            resolvedFirmId,
+            {
+              name: row.client_name,
+              state: row.state,
+              entityType: row.entity_type,
+              services: row.services,
+              taxReturns: row.taxReturns,
+              salesTaxFrequency: row.salesTaxFrequency,
+            },
+            "import",
+          );
+        }
+        setStep(4);
         return;
       }
+
+      if (!canFinishManualClient) {
+        throw new Error("Add one client and choose at least one service or return.");
+      }
+
+      const resolvedFirmId = await ensureFirm();
+      await createClientRecord(resolvedFirmId, manualClient, "manual");
+      setStep(4);
     } catch (error) {
-      const message = getErrorMessage(error);
-      console.error("GENERATE WORKSPACE ERROR:", error);
-      console.error("GENERATE WORKSPACE ERROR MESSAGE:", message);
-      setStep(
-        accountType === "accounting_firm" && intakeMethod !== "later"
-          ? 4
-          : accountType === "business_owner" && intakeMethod === "manual"
-            ? 2
-            : accountType === "business_owner"
-              ? 1
-              : 3
-      );
-      setSaveError(message);
+      setSaveError(getErrorMessage(error));
+      setStep(accountType === "business_owner" ? 2 : intakeMethod === "csv" ? 3 : 2);
     } finally {
       setSaving(false);
+      setShowGeneratingCue(false);
     }
   }
 
-  function parseCsv(raw: string) {
-    const trimmed = raw.trim();
-    if (!trimmed) {
-      setCsvRows([]);
-      return;
+  async function goToCheckout() {
+    setCheckoutStarting(true);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const params = new URLSearchParams();
+    const normalizedType =
+      accountType === "business_owner" ? "business" : "firm";
+    const searchParams =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : null;
+    const planFromUrl = searchParams?.get("plan");
+    const resolvedPlan =
+      planFromUrl || (normalizedType === "business" ? "operations" : "growth");
+
+    params.set("plan", resolvedPlan);
+    params.set("type", normalizedType);
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    const resolvedFirmId =
+      firmId ||
+      (typeof user?.user_metadata?.firm_id === "string"
+        ? user.user_metadata.firm_id
+        : typeof user?.user_metadata?.workspace_id === "string"
+          ? user.user_metadata.workspace_id
+          : null);
+
+    if (typeof window !== "undefined") {
+      if (user?.email) {
+        window.localStorage.setItem("dh_checkout_email", user.email);
+      }
+      if (resolvedFirmId) {
+        window.localStorage.setItem("dh_checkout_firm_id", resolvedFirmId);
+      }
     }
 
-    Papa.parse<Record<string, string>>(trimmed, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results: Papa.ParseResult<Record<string, string>>) => {
-        const parsed = (results.data || [])
-          .map((row: Record<string, string>, index: number) => {
-            const normalized = Object.fromEntries(
-              Object.entries(row).map(([key, value]) => [
-                key.trim().toLowerCase(),
-                String(value ?? "").trim(),
-              ])
-            );
-
-            const findValue = (...candidates: string[]) => {
-              const entry = Object.entries(normalized).find(([key]) =>
-                candidates.some((candidate) => key.includes(candidate))
-              );
-              return entry?.[1] || "";
-            };
-
-            return {
-              id: `csv-${index + 1}`,
-              include: true,
-              client_name: findValue("client", "company", "name"),
-              state: findValue("state").toUpperCase(),
-              entity_type: findValue("entity", "type") || "Client",
-              services: {
-                payroll: toBoolean(findValue("payroll")),
-                sales_tax: toBoolean(findValue("sales tax", "sales_tax", "salestax")),
-                annual_report: toBoolean(findValue("annual report", "annual_report")),
-                w2_1099: toBoolean(findValue("1099", "w2", "w-2")),
-              },
-              taxReturns: (() => {
-                const genericIncomeTax = toBoolean(
-                  findValue("income tax", "income_tax", "tax return", "income")
-                );
-                const inferred = genericIncomeTax
-                  ? getDefaultTaxReturnsForEntity(findValue("entity", "type"))
-                  : defaultTaxReturns();
-
-                return {
-                  f1040: toBoolean(findValue("1040")) || inferred.f1040,
-                  f1120: toBoolean(findValue("1120")) || inferred.f1120,
-                  f1120s:
-                    toBoolean(findValue("1120s", "1120-s", "1120 s")) || inferred.f1120s,
-                  f1065: toBoolean(findValue("1065")) || inferred.f1065,
-                };
-              })(),
-              salesTaxFrequency: normalizeSalesTaxFrequency(
-                findValue("sales_tax_frequency", "sales tax frequency", "salestaxfrequency"),
-                "quarterly"
-              ),
-            } satisfies CsvImportedRow;
-          })
-          .filter((row: CsvImportedRow) => row.client_name.trim().length > 0);
-
-        setCsvRows(parsed);
-      },
-    });
+    router.replace(`/checkout?${params.toString()}`);
+    router.refresh();
   }
 
-  const heading = getHeading(step, accountType, intakeMethod);
-  const subheading = getSubheading(step, accountType, intakeMethod);
+  const heading =
+    step === "loading"
+      ? "Building your compliance workspace"
+      : step === 4
+        ? "Activate your workspace"
+        : accountType === "business_owner"
+          ? step === 2
+            ? "Let’s generate your first filings"
+            : "Choose who this workspace is for"
+          : step === 1
+            ? "Set up your firm"
+            : step === 2
+              ? "Let’s generate your first filings"
+              : "Import clients from CSV";
 
-  const showPathChooserStep = step === 1 && !lockedAccountType;
-  const showBusinessChoiceStep = step === 1 && accountType === "business_owner";
-  const showFirmChoiceStep = step === 3 && accountType === "accounting_firm";
+  const subheading =
+    step === "loading"
+      ? "Creating the workspace, saving your setup, and generating only the filings you need."
+      : step === 4
+        ? "Your compliance system is built and waiting. Start your free trial to unlock your dashboard and begin tracking deadlines."
+        : accountType === "business_owner"
+          ? step === 2
+            ? "Tell us about your business and we’ll build the first version of your compliance system."
+            : "We’ll tailor the setup based on whether this workspace is for your own business or for client work."
+          : step === 1
+            ? "A fast setup so you can start with one real client, see real filings, and expand later."
+            : step === 2
+              ? "Start with one client. You can import the rest after you see the workspace working."
+              : "Upload your client list. You’ll review everything before anything is created.";
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.16),transparent_42%),radial-gradient(circle_at_80%_20%,rgba(14,165,233,0.08),transparent_30%),linear-gradient(to_bottom,#0b1220,#0b1220,#08101c)] px-6 py-10 text-white">
@@ -1036,11 +929,9 @@ export default function OnboardingPage() {
                 : `Step ${currentStepDisplay} of ${totalSteps}`}
             </div>
 
-            {lockedAccountType && accountType && (
+            {accountType && (
               <div className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-xs uppercase tracking-[0.18em] text-cyan-300 backdrop-blur-sm">
-                {accountType === "accounting_firm"
-                  ? "Firm plan selected"
-                  : "Business plan selected"}
+                {accountType === "accounting_firm" ? "Firm setup" : "Business setup"}
               </div>
             )}
           </div>
@@ -1055,8 +946,16 @@ export default function OnboardingPage() {
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{heading}</h1>
           <p className="mt-3 text-slate-400">{subheading}</p>
           <p className="mt-3 text-sm text-slate-500">
-            A fast setup flow built to get you into a real, working workspace.
+            Fast setup, real filings, and no accidental bulk creation.
           </p>
+
+          {showGeneratingCue && step !== "loading" && (
+            <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-4 py-2 text-sm text-cyan-200">
+              <Sparkles className="h-4 w-4" />
+              Generating your filings...
+            </div>
+          )}
+
           {!previewConfigLoaded && (
             <p className="mt-2 text-xs text-slate-500">
               Syncing live compliance rules and workflow templates...
@@ -1064,7 +963,7 @@ export default function OnboardingPage() {
           )}
         </div>
 
-        <div className="grid gap-8 lg:grid-cols-[1.2fr,0.8fr]">
+        <div className="grid gap-8 lg:grid-cols-[1.15fr,0.85fr]">
           <div>
             <AnimatePresence mode="wait">
               <motion.div
@@ -1074,26 +973,26 @@ export default function OnboardingPage() {
                 exit={{ opacity: 0, y: -18 }}
                 transition={{ duration: 0.22 }}
               >
-                {showPathChooserStep && (
+                {!accountType && step === 1 && (
                   <div className="grid gap-6 md:grid-cols-2">
                     <PathCard
-                      title="I run a business"
-                      subtitle="Get your own company set up with live deadlines and a real compliance workspace"
+                      title="My business"
+                      subtitle="Set up one company fast and generate the filings you actually need."
                       points={[
                         "Single-entity setup in minutes",
-                        "Smart deadline detection",
-                        "Calendar and reminders ready fast",
+                        "Live filing preview as you select services",
+                        "Built to get you into checkout fast",
                       ]}
                       active={accountType === "business_owner"}
                       onClick={() => setAccountType("business_owner")}
                     />
                     <PathCard
-                      title="I manage clients"
-                      subtitle="Set up a firm workspace built for real clients, real services, and controlled workflow creation"
+                      title="My clients"
+                      subtitle="Start with one real client now, then expand once the workspace is live."
                       points={[
-                        "Import only the clients you want",
-                        "Choose services per client",
-                        "Avoid creating 250 workflows by mistake",
+                        "Best conversion path for firms",
+                        "No accidental mass workflow creation",
+                        "CSV import still available one step later",
                       ]}
                       active={accountType === "accounting_firm"}
                       onClick={() => setAccountType("accounting_firm")}
@@ -1102,9 +1001,9 @@ export default function OnboardingPage() {
                     <div className="col-span-full mt-4 flex justify-end">
                       <button
                         type="button"
-                        disabled={!canContinueStep1}
-                        onClick={goForwardFromStep1}
-                        className="h-12 cursor-pointer rounded-xl bg-blue-600 px-6 font-semibold transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled={!canContinueAccountSelection}
+                        onClick={() => setStep(accountType === "business_owner" ? 2 : 1)}
+                        className="h-12 rounded-xl bg-blue-600 px-6 font-semibold transition hover:bg-blue-500 disabled:opacity-40"
                       >
                         Continue
                       </button>
@@ -1112,8 +1011,15 @@ export default function OnboardingPage() {
                   </div>
                 )}
 
-                {step === 2 && accountType === "accounting_firm" && (
-                  <div className="mx-auto max-w-xl space-y-6">
+                {accountType === "accounting_firm" && step === 1 && (
+                  <div className="mx-auto max-w-xl space-y-6 rounded-3xl border border-white/10 bg-white/[0.035] p-6">
+                    <div>
+                      <div className="text-sm font-semibold text-white">Firm details</div>
+                      <p className="mt-1 text-sm text-slate-400">
+                        This sets up the workspace. You’ll add one real client on the next step.
+                      </p>
+                    </div>
+
                     <Input
                       label="Firm name"
                       value={firmName}
@@ -1125,22 +1031,29 @@ export default function OnboardingPage() {
                       value={clientCount}
                       onChange={setClientCount}
                       placeholder="250"
-                      type="number"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                     />
 
-                    <div className="flex items-center justify-between pt-4">
+                    <div className="flex items-center justify-between pt-2">
                       <button
                         type="button"
-                        onClick={() => setStep(lockedAccountType ? 2 : 1)}
-                        className="text-slate-400 transition hover:text-slate-200"
+                        onClick={() => {
+                          if (signupType) return;
+                          setAccountType(null);
+                          setStep(1);
+                        }}
+                        className="inline-flex items-center gap-2 text-slate-400 transition hover:text-slate-200"
                       >
+                        <ChevronLeft className="h-4 w-4" />
                         Back
                       </button>
                       <button
                         type="button"
                         disabled={!canContinueFirmDetails}
-                        onClick={() => setStep(3)}
-                        className="h-12 cursor-pointer rounded-xl bg-blue-600 px-6 font-semibold transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+                        onClick={() => setStep(2)}
+                        className="h-12 rounded-xl bg-blue-600 px-6 font-semibold transition hover:bg-blue-500 disabled:opacity-40"
                       >
                         Continue
                       </button>
@@ -1148,86 +1061,18 @@ export default function OnboardingPage() {
                   </div>
                 )}
 
-                {(showBusinessChoiceStep || showFirmChoiceStep) && (
-                  <div className="mx-auto max-w-xl space-y-6">
-                    <Choice
-                      title={accountType === "accounting_firm" ? "Upload a CSV" : "Import data later"}
-                      subtitle={
-                        accountType === "accounting_firm"
-                          ? "Import a client list, preview it, and choose which clients to activate."
-                          : "Jump in now and finish company setup from your dashboard."
-                      }
-                      badge={accountType === "accounting_firm" ? "Best for many clients" : "Flexible"}
-                      active={intakeMethod === "csv"}
-                      onClick={() => setIntakeMethod("csv")}
-                      highlight={accountType === "accounting_firm"}
-                      hidden={accountType === "business_owner"}
-                    />
-
-                    <Choice
-                      title={accountType === "accounting_firm" ? "Add one client" : "Start with guided setup"}
-                      subtitle={
-                        accountType === "accounting_firm"
-                          ? "Create one real client now and generate workflows only for selected services."
-                          : "Answer a few questions and generate your first compliance plan."
-                      }
-                      badge={accountType === "business_owner" ? "Recommended" : "Best for first setup"}
-                      active={intakeMethod === "manual"}
-                      onClick={() => setIntakeMethod("manual")}
-                    />
-
-                    <Choice
-                      title="Explore first"
-                      subtitle={
-                        accountType === "accounting_firm"
-                          ? "Create the workspace only. Add clients and services later."
-                          : "Take a look around before entering more company details."
-                      }
-                      active={intakeMethod === "later"}
-                      onClick={() => setIntakeMethod("later")}
-                    />
-
-                    {saveError && (
-                      <div className="rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-                        {saveError}
-                      </div>
-                    )}
-
-                    <div className="flex items-center justify-between pt-4">
-                      <button
-                        type="button"
-                        onClick={goBackFromIntakeChoice}
-                        className="text-slate-400 transition hover:text-slate-200"
-                      >
-                        Back
-                      </button>
-
-                      <button
-                        type="button"
-                        disabled={!canContinueIntakeChoice || saving}
-                        onClick={generateWorkspace}
-                        className="h-12 cursor-pointer rounded-xl bg-blue-600 px-6 font-semibold transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        {accountType === "accounting_firm" && intakeMethod !== "later"
-                          ? "Continue"
-                          : saving
-                            ? "Generating..."
-                            : intakeMethod === "later"
-                              ? "Generate workspace"
-                              : "Continue"}
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {step === 2 && accountType === "business_owner" && intakeMethod === "manual" && (
+                {accountType === "business_owner" && step === 2 && (
                   <SetupPanel
                     form={businessSetup}
                     setForm={setBusinessSetup}
-                    title="Set up your business"
-                    subtitle="Enter your company details and switch on only the filings you actually need."
-                    buttonLabel={saving ? "Generating..." : "Create my compliance workspace"}
-                    onBack={() => setStep(1)}
+                    title="Generate your first filings"
+                    subtitle="Enter your business details and switch on only the filings you actually need. We’ll generate the first version of your compliance system instantly."
+                    buttonLabel={saving ? "Generating..." : "Build workspace"}
+                    onBack={() => {
+                      if (signupType) return;
+                      setAccountType(null);
+                      setStep(1);
+                    }}
                     onSubmit={generateWorkspace}
                     disabled={!canFinishBusinessSetup || saving}
                     saveError={saveError}
@@ -1235,32 +1080,65 @@ export default function OnboardingPage() {
                   />
                 )}
 
-                {step === 4 && accountType === "accounting_firm" && intakeMethod === "manual" && (
-                  <SetupPanel
-                    form={manualClient}
-                    setForm={setManualClient}
-                    title="Add your first client"
-                    subtitle="Create one real client and turn on only the services that apply."
-                    buttonLabel={saving ? "Generating..." : "Create workspace and client"}
-                    onBack={() => setStep(3)}
-                    onSubmit={generateWorkspace}
-                    disabled={!canFinishManualClient || saving}
-                    saveError={saveError}
-                  />
-                )}
-
-                {step === 4 && accountType === "accounting_firm" && intakeMethod === "csv" && (
-                  <div className="mx-auto max-w-4xl space-y-6">
-                    <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-5">
-                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                {accountType === "accounting_firm" && step === 2 && (
+                  <div className="space-y-5">
+                    <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-6">
+                      <div className="flex flex-wrap items-start justify-between gap-4">
                         <div>
-                          <div className="text-sm font-semibold text-white">Import client list</div>
-                          <p className="mt-1 text-sm text-slate-400">
-                            Paste CSV data or upload a file. Only checked rows will be imported, and nothing is final until you continue.
+                          <div className="text-sm font-semibold text-white">
+                            Start with one client
+                          </div>
+                          <p className="mt-1 max-w-xl text-sm text-slate-400">
+                            This is the fastest path. Enter one real client and we’ll generate live filings immediately.
                           </p>
                         </div>
 
-                        <label className="inline-flex h-11 cursor-pointer items-center rounded-xl border border-white/10 bg-white/5 px-4 text-sm text-slate-200 hover:bg-white/10">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSaveError(null);
+                            setIntakeMethod(intakeMethod === "manual" ? "csv" : "manual");
+                            setStep(intakeMethod === "manual" ? 3 : 2);
+                          }}
+                          className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-400 transition hover:bg-white/[0.04] hover:text-slate-200"
+                        >
+                          <FileSpreadsheet className="h-4 w-4" />
+                          {intakeMethod === "manual"
+                            ? "Import from CSV instead"
+                            : "Start with one client instead"}
+                        </button>
+                      </div>
+                    </div>
+
+                    <SetupPanel
+                      form={manualClient}
+                      setForm={setManualClient}
+                      title="Generate your first filings"
+                      subtitle="Tell us about one client so we can generate real deadlines and workflows now. You can import the rest after the workspace is live."
+                      buttonLabel={saving ? "Generating..." : "Build workspace"}
+                      onBack={() => setStep(1)}
+                      onSubmit={generateWorkspace}
+                      disabled={!canFinishManualClient || saving}
+                      saveError={saveError}
+                    />
+                  </div>
+                )}
+
+                {accountType === "accounting_firm" && step === 3 && (
+                  <div className="mx-auto max-w-4xl space-y-6">
+                    <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-6">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-white">
+                            Upload your client list
+                          </div>
+                          <p className="mt-1 text-sm text-slate-400">
+                            You’ll review selected rows before anything is created. This is still safe.
+                          </p>
+                        </div>
+
+                        <label className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 text-sm text-slate-200 hover:bg-white/10">
+                          <Upload className="h-4 w-4" />
                           Upload CSV
                           <input
                             type="file"
@@ -1291,11 +1169,11 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                     </div>
 
                     {csvRows.length > 0 && (
-                      <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-5">
-                        <div className="mb-3 flex items-center justify-between">
+                      <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-6">
+                        <div className="mb-4 flex items-center justify-between">
                           <div className="text-sm font-semibold text-white">Preview import</div>
                           <div className="text-sm text-slate-400">
-                            {includedCsvRows.length} of {csvRows.length} clients selected
+                            {includedCsvRows.length} of {csvRows.length} selected
                           </div>
                         </div>
 
@@ -1315,8 +1193,8 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                                         prev.map((item) =>
                                           item.id === row.id
                                             ? { ...item, include: !item.include }
-                                            : item
-                                        )
+                                            : item,
+                                        ),
                                       )
                                     }
                                   />
@@ -1345,8 +1223,8 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                                                   [service]: !item.services[service],
                                                 },
                                               }
-                                            : item
-                                        )
+                                            : item,
+                                        ),
                                       )
                                     }
                                   />
@@ -1375,8 +1253,8 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                                                     [taxReturn]: !item.taxReturns[taxReturn],
                                                   },
                                                 }
-                                              : item
-                                          )
+                                              : item,
+                                          ),
                                         )
                                       }
                                     />
@@ -1393,8 +1271,8 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                                       prev.map((item) =>
                                         item.id === row.id
                                           ? { ...item, salesTaxFrequency: frequency }
-                                          : item
-                                      )
+                                          : item,
+                                      ),
                                     )
                                   }
                                 />
@@ -1414,18 +1292,22 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                     <div className="flex items-center justify-between pt-2">
                       <button
                         type="button"
-                        onClick={() => setStep(3)}
-                        className="text-slate-400 transition hover:text-slate-200"
+                        onClick={() => {
+                          setIntakeMethod("manual");
+                          setStep(2);
+                        }}
+                        className="inline-flex items-center gap-2 text-slate-400 transition hover:text-slate-200"
                       >
+                        <ChevronLeft className="h-4 w-4" />
                         Back
                       </button>
                       <button
                         type="button"
                         disabled={!hasValidCsvImport || saving}
                         onClick={generateWorkspace}
-                        className="h-12 cursor-pointer rounded-xl bg-blue-600 px-6 font-semibold transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+                        className="h-12 rounded-xl bg-blue-600 px-6 font-semibold transition hover:bg-blue-500 disabled:opacity-40"
                       >
-                        {saving ? "Generating..." : "Import selected clients"}
+                        {saving ? "Generating..." : "Build workspace"}
                       </button>
                     </div>
                   </div>
@@ -1448,9 +1330,11 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                       </div>
                     </div>
 
-                    <h2 className="text-center text-2xl font-semibold">Building your workspace</h2>
+                    <h2 className="text-center text-2xl font-semibold">
+                      Generating your compliance system
+                    </h2>
                     <p className="mt-3 text-center text-slate-400">
-                      We’re building your compliance system now — creating the workspace, saving your selections, and generating only the filings and workflows you actually need.
+                      Creating the workspace, saving your setup, and generating only the filings you actually need.
                     </p>
 
                     <div className="mt-8 space-y-4">
@@ -1461,100 +1345,132 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                   </div>
                 )}
 
-                {step === 5 && (
+                {step === 4 && (
                   <div className="space-y-6">
                     <div className="rounded-3xl border border-blue-400/20 bg-gradient-to-br from-blue-500/10 via-[#111827] to-[#111827] p-6">
                       <div className="mb-5">
                         <h2 className="text-2xl font-semibold">
-                          {accountType === "accounting_firm"
-                            ? `Your ${firmName || "firm"} workspace is ready`
-                            : `Your ${businessSetup.name || "business"} workspace is ready`}
+                          Activate your workspace
                         </h2>
                         <p className="mt-2 text-slate-400">
-                          Your deadlines, workflows, and reminders are now set up based on the services and filings you actually selected.
+                          Your compliance system is already built. Your dashboard, filings, and deadlines are waiting — start your free trial to unlock access.
                         </p>
                       </div>
 
+                      {nextFiling && (
+                        <div className="mb-5 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-4">
+                          <div className="text-xs uppercase tracking-[0.16em] text-emerald-300/90">
+                            Your first deadline is already waiting
+                          </div>
+                          <div className="mt-1 text-lg font-semibold text-white">
+                            {nextFiling.filingName}
+                          </div>
+                          <div className="mt-1 text-sm text-emerald-100/90">
+                            Due {formatDueDate(nextFiling.dueDate)} in {nextFiling.jurisdictionCode}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="grid gap-4 md:grid-cols-2">
                         <PreviewStatCard
-                          title={
-                            accountType === "accounting_firm"
-                              ? "Clients created"
-                              : "Business entities created"
-                          }
+                          title={accountType === "business_owner" ? "Businesses configured" : "Clients created"}
                           value={String(workspacePreview.clients)}
-                          note="Only the records you chose were added."
+                          note="Only the records you selected were created."
                         />
                         <PreviewStatCard
                           title="Filings + workflows"
                           value={String(workspacePreview.workflows)}
-                          note="Generated only for the selected services and filing tracks."
+                          note="Built from what you told us."
                         />
                       </div>
 
-                      {workspacePreview.filings.length > 0 && (
-                        <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                          <div className="text-xs uppercase tracking-[0.16em] text-slate-400">
-                            Included in this setup
-                          </div>
-                          <div className="mt-3 grid gap-3 md:grid-cols-2">
-                            {workspacePreview.filings.slice(0, 4).map((filing) => (
-                              <div
-                                key={`${filing.filingName}-${filing.dueDate}-final`}
-                                className="rounded-xl border border-white/10 bg-[#0b1220] px-3 py-3"
-                              >
-                                <div className="text-sm font-medium text-white">{filing.filingName}</div>
-                                <div className="mt-1 text-xs text-slate-400">
-                                  {filing.jurisdictionCode} • due {new Date(`${filing.dueDate}T00:00:00`).toLocaleDateString()}
+                      {(workspacePreview.primaryFilings.length > 0 ||
+                        workspacePreview.supportingFilings.length > 0) && (
+                        <div className="mt-5 space-y-4">
+                          {workspacePreview.primaryFilings.length > 0 && (
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                              <div className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                                Primary filings
+                              </div>
+                              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                {workspacePreview.primaryFilings.map((filing) => (
+                                  <div
+                                    key={`${filing.filingName}-${filing.dueDate}-primary`}
+                                    className="rounded-xl border border-cyan-400/15 bg-[#0b1220] px-3 py-3"
+                                  >
+                                    <div className="text-sm font-medium text-white">{filing.filingName}</div>
+                                    <div className="mt-1 text-xs text-slate-400">
+                                      {filing.jurisdictionCode} • due {formatDueDate(filing.dueDate)}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {accountType === "accounting_firm" &&
+                            workspacePreview.supportingFilings.length > 0 && (
+                              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                                <div className="text-xs uppercase tracking-[0.16em] text-slate-400">
+                                  Supporting filings
+                                </div>
+                                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                  {workspacePreview.supportingFilings.map((filing) => (
+                                    <div
+                                      key={`${filing.filingName}-${filing.dueDate}-supporting`}
+                                      className="rounded-xl border border-white/10 bg-[#0b1220] px-3 py-3"
+                                    >
+                                      <div className="text-sm font-medium text-white">{filing.filingName}</div>
+                                      <div className="mt-1 text-xs text-slate-400">
+                                        {filing.jurisdictionCode} • due {formatDueDate(filing.dueDate)}
+                                      </div>
+                                    </div>
+                                  ))}
                                 </div>
                               </div>
-                            ))}
-                          </div>
+                            )}
                         </div>
                       )}
                     </div>
 
                     <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-6">
-                      <div className="mb-4 text-sm font-semibold text-slate-300">What happens next</div>
+                      <div className="mb-4 text-sm font-semibold text-slate-300">
+                        What happens next
+                      </div>
                       <div className="grid gap-4 md:grid-cols-3">
                         <PreviewCard
-                          title="Guided setup is complete"
-                          subtitle="Open the dashboard to see your highest-priority deadlines and next actions immediately."
+                          title="Activate your workspace"
+                          subtitle="Start your free trial to unlock the dashboard and begin tracking deadlines."
                         />
                         <PreviewCard
-                          title="Imports are ready"
-                          subtitle="Use the filings page to manage the full queue, review workflows, and add anything else manually."
+                          title="View your dashboard"
+                          subtitle="Your highest-priority deadlines and workflow actions will be waiting."
                         />
                         <PreviewCard
-                          title="Clear handoff"
-                          subtitle="Your setup is based on live compliance rules and templates, so what you see should match the real system."
+                          title="Add more clients anytime"
+                          subtitle="Import more clients later or add more filings once the workspace is live."
                         />
                       </div>
 
-                      <AnimatePresence>
-                        {showFinalCta && (
-                          <motion.div
-                            initial={{ opacity: 0, y: 12 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: 12 }}
-                            transition={{ duration: 0.25 }}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                router.replace("/dashboard");
-                                router.refresh();
-                              }}
-                              className="mt-6 h-12 w-full rounded-xl bg-blue-600 font-semibold transition hover:bg-blue-500"
-                            >
-                              Enter your dashboard
-                            </button>
-                            <p className="mt-2 text-center text-xs text-slate-500">
-                              Your workspace is ready and waiting.
-                            </p>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
+                      <div className="mt-6 flex flex-col gap-3">
+                        <p className="text-center text-sm text-emerald-300">
+                          Your workspace is live — you just need to activate it
+                        </p>
+
+                        <button
+                          type="button"
+                          onClick={goToCheckout}
+                          disabled={checkoutStarting}
+                          className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 font-semibold transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
+                        >
+                          {checkoutStarting ? "Starting your trial..." : "Start free trial"}
+                          <ArrowRight className="h-4 w-4" />
+                        </button>
+
+                        <p className="text-center text-sm text-slate-500">
+                          No credit card required • Takes less than 60 seconds
+                        </p>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1564,26 +1480,26 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
 
           <aside className="rounded-3xl border border-white/10 bg-white/[0.035] p-6">
             <div className="mb-5">
-              <div className="text-xs uppercase tracking-[0.16em] text-slate-400">Why this setup works</div>
-              <h3 className="mt-2 text-xl font-semibold">A cleaner way to launch</h3>
+              <div className="text-xs uppercase tracking-[0.16em] text-slate-400">Live preview</div>
+              <h3 className="mt-2 text-xl font-semibold">What we’ll create</h3>
             </div>
 
             <div className="space-y-4">
               <MiniInsight
-                title={accountType === "accounting_firm" ? "No accidental bulk setup" : "Faster first value"}
+                title={accountType === "accounting_firm" ? "No accidental bulk setup" : "Fast first value"}
                 body={
                   accountType === "accounting_firm"
-                    ? "Only the clients, services, and filing tracks you actually choose get created."
-                    : "Start with a workspace that already reflects the filings and services you actually need."
+                    ? "Start with one client by default. Import the rest only after you’ve seen the workspace working."
+                    : "Start with a real workspace that already reflects your business and your actual filing needs."
                 }
               />
               <MiniInsight
-                title="Service-level control"
-                body="Choose exactly which services apply before anything is created."
+                title="Built around your selections"
+                body="Only the services you enable will generate filings and workflows."
               />
               <MiniInsight
-                title="Built for real work"
-                body="Your workspace starts with real clients or business details, not placeholders."
+                title="Real deadlines, not placeholders"
+                body="This preview is driven by your compliance rules and workflow templates."
               />
 
               <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/5 p-4">
@@ -1592,24 +1508,57 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                   {workspacePreview.workflows > 0
                     ? `${workspacePreview.workflows} filing${workspacePreview.workflows === 1 ? "" : "s"} will be generated`
                     : previewConfigLoaded
-                      ? "Choose services to preview filings"
+                      ? "Select services to preview filings"
                       : "Loading live filing preview"}
                 </div>
-                <div className="mt-3 space-y-2">
-                  {workspacePreview.filings.slice(0, 4).map((filing) => (
-                    <div
-                      key={`${filing.filingName}-${filing.dueDate}`}
-                      className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2"
-                    >
-                      <div className="text-sm text-white">{filing.filingName}</div>
-                      <div className="mt-1 text-xs text-slate-400">
-                        {filing.jurisdictionCode} • due {new Date(`${filing.dueDate}T00:00:00`).toLocaleDateString()}
+
+                <div className="mt-3 space-y-4">
+                  {workspacePreview.primaryFilings.length > 0 && (
+                    <div>
+                      <div className="mb-2 text-xs uppercase tracking-[0.16em] text-slate-400">
+                        Primary filings
+                      </div>
+                      <div className="space-y-2">
+                        {workspacePreview.primaryFilings.map((filing) => (
+                          <div
+                            key={`${filing.filingName}-${filing.dueDate}-aside-primary`}
+                            className="rounded-xl border border-cyan-400/15 bg-white/[0.04] px-3 py-2"
+                          >
+                            <div className="text-sm text-white">{filing.filingName}</div>
+                            <div className="mt-1 text-xs text-slate-400">
+                              {filing.jurisdictionCode} • due {formatDueDate(filing.dueDate)}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                  ))}
+                  )}
+
+                  {accountType === "accounting_firm" &&
+                    workspacePreview.supportingFilings.length > 0 && (
+                      <div>
+                        <div className="mb-2 text-xs uppercase tracking-[0.16em] text-slate-400">
+                          Supporting filings
+                        </div>
+                        <div className="space-y-2">
+                          {workspacePreview.supportingFilings.map((filing) => (
+                            <div
+                              key={`${filing.filingName}-${filing.dueDate}-aside-supporting`}
+                              className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2"
+                            >
+                              <div className="text-sm text-white">{filing.filingName}</div>
+                              <div className="mt-1 text-xs text-slate-400">
+                                {filing.jurisdictionCode} • due {formatDueDate(filing.dueDate)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                   {previewConfigLoaded && workspacePreview.filings.length === 0 && (
                     <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.03] px-3 py-3 text-sm text-slate-400">
-                      No filing preview yet. Select an intake path and turn on at least one service or tax return.
+                      Add a business or client, choose at least one service or return, and the filing preview will appear here.
                     </div>
                   )}
                 </div>
@@ -1622,193 +1571,97 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
   );
 }
 
-function normalizeSalesTaxFrequency(
-  value?: string,
-  fallback: FilingFrequency = "quarterly"
-): FilingFrequency {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "monthly" || normalized === "quarterly" || normalized === "annual") {
-    return normalized;
-  }
-  return fallback;
+function Input({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+  inputMode,
+  pattern,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  type?: string;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+  pattern?: string;
+}) {
+  return (
+    <label className="block">
+      <div className="mb-2 text-sm font-medium text-slate-200">{label}</div>
+      <input
+        type={type}
+        inputMode={inputMode}
+        pattern={pattern}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="h-12 w-full appearance-none rounded-xl border border-white/10 bg-[#020617] px-4 text-white outline-none transition [appearance:textfield] focus:border-blue-500 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+      />
+    </label>
+  );
 }
 
-function toBoolean(value?: string) {
-  return /^(y|yes|true|1|x|on)$/i.test(String(value || "").trim());
+function StateInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block">
+      <div className="mb-2 text-sm font-medium text-slate-200">{label}</div>
+      <input
+        list="dh-state-options"
+        value={value}
+        onChange={(e) => onChange(e.target.value.toUpperCase().slice(0, 2))}
+        placeholder="NY"
+        className="h-12 w-full rounded-xl border border-white/10 bg-[#020617] px-4 text-white outline-none transition focus:border-blue-500"
+      />
+      <datalist id="dh-state-options">
+        {US_STATES.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </datalist>
+    </label>
+  );
 }
 
-function toISODate(date: Date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function getNextAnnualDueDate(offsetDays = 30) {
-  const date = new Date();
-  date.setDate(date.getDate() + offsetDays);
-  return toISODate(date);
-}
-
-function getNextQuarterlyDueDates(count = 4) {
-  const today = new Date();
-  const dueDates: string[] = [];
-  let cursorYear = today.getFullYear();
-  while (dueDates.length < count) {
-    for (const month of [3, 6, 9, 12]) {
-      const dueDate = new Date(cursorYear, month - 1, 15);
-      if (dueDate > today) {
-        dueDates.push(toISODate(dueDate));
-        if (dueDates.length === count) return dueDates;
-      }
-    }
-    cursorYear += 1;
-  }
-  return dueDates;
-}
-
-function getNextSalesTaxDueDates(state: string, frequency: FilingFrequency) {
-  const normalizedState = state.trim().toUpperCase();
-  const today = new Date();
-
-  if (normalizedState === "NY") {
-    if (frequency === "monthly") {
-      const monthlyDates: string[] = [];
-      let year = today.getFullYear();
-      let month = today.getMonth() + 1;
-      while (monthlyDates.length < 12) {
-        month += 1;
-        if (month > 12) {
-          month = 1;
-          year += 1;
-        }
-        monthlyDates.push(toISODate(new Date(year, month - 1, 20)));
-      }
-      return monthlyDates;
-    }
-
-    if (frequency === "quarterly") {
-      const quarterlyDates: string[] = [];
-      let year = today.getFullYear();
-      while (quarterlyDates.length < 4) {
-        for (const [month, day] of [
-          [3, 20],
-          [6, 20],
-          [9, 20],
-          [12, 20],
-        ] as const) {
-          const dueDate = new Date(year, month - 1, day);
-          if (dueDate > today) {
-            quarterlyDates.push(toISODate(dueDate));
-            if (quarterlyDates.length === 4) return quarterlyDates;
-          }
-        }
-        year += 1;
-      }
-      return quarterlyDates;
-    }
-
-    const annualDueDate = new Date(today.getFullYear(), 2, 20);
-    if (annualDueDate <= today) {
-      annualDueDate.setFullYear(annualDueDate.getFullYear() + 1);
-    }
-    return [toISODate(annualDueDate)];
-  }
-
-  if (frequency === "monthly") {
-    const dates: string[] = [];
-    let year = today.getFullYear();
-    let month = today.getMonth();
-    while (dates.length < 12) {
-      month += 1;
-      if (month > 11) {
-        month = 0;
-        year += 1;
-      }
-      dates.push(toISODate(new Date(year, month, 20)));
-    }
-    return dates;
-  }
-
-  if (frequency === "quarterly") {
-    return getNextQuarterlyDueDates(4);
-  }
-
-  return [getNextAnnualDueDate(30)];
-}
-
-function getCurrentStepDisplay(
-  step: Step,
-  accountType: AccountType,
-  lockedAccountType = false
-) {
-  if (accountType === "business_owner") {
-    if (step === "loading" || step === 5) return 2;
-    if (step === 1) return 1;
-    if (step === 2) return 2;
-    if (step === 3) return 1;
-    if (step === 4) return 2;
-    return 1;
-  }
-
-  if (lockedAccountType) {
-    if (step === 2) return 1;
-    if (step === 3) return 2;
-    if (step === 4) return 3;
-    if (step === "loading" || step === 5) return 4;
-    return 1;
-  }
-
-  if (step === "loading" || step === 5) {
-    return 5;
-  }
-
-  return Number(step);
-}
-
-function getHeading(step: Step, accountType: AccountType, intakeMethod: IntakeMethod) {
-  if (step === 1 && accountType === "business_owner") {
-    return "Choose your fastest path to go live";
-  }
-  if (step === 1) return "Let’s get your compliance fully under control";
-  if (step === 2 && accountType === "accounting_firm") return "Set up your firm workspace";
-  if (step === 3 && accountType === "accounting_firm") return "Choose how you want to get started";
-  if (step === 2 && accountType === "business_owner" && intakeMethod === "manual") {
-    return "Build your business workspace";
-  }
-  if (step === 4 && intakeMethod === "manual") return "Add your first client";
-  if (step === 4 && intakeMethod === "csv") return "Import only the clients you want";
-  if (step === "loading") return "Generating your Due Horizon workspace";
-  if (step === 5) return "You’re ready to go";
-  return "Set up your workspace";
-}
-
-function getSubheading(step: Step, accountType: AccountType, intakeMethod: IntakeMethod) {
-  if (step === 1 && accountType === "business_owner") {
-    return "Choose the path that gets your workspace live the fastest.";
-  }
-  if (step === 1) {
-    return "You’ll have a real workspace with live filings and deadlines in just a few steps.";
-  }
-  if (step === 2 && accountType === "accounting_firm") {
-    return "We’ll use this to shape your initial workspace, client setup, and compliance structure.";
-  }
-  if (step === 3 && accountType === "accounting_firm") {
-    return "Import a list, add one client manually, or create the workspace first and finish setup later.";
-  }
-  if (step === 2 && accountType === "business_owner" && intakeMethod === "manual") {
-    return "Enter your company details and generate only the filings your business actually needs.";
-  }
-  if (step === 4 && intakeMethod === "manual") {
-    return "Create one real client and turn on only the services that apply.";
-  }
-  if (step === 4 && intakeMethod === "csv") {
-    return "Preview your CSV and choose which rows and services should turn into real workflows.";
-  }
-  if (step === "loading") {
-    return "We’re creating your workspace, saving clients, and generating only the necessary workflows.";
-  }
-  if (step === 5) {
-    return "Your first dashboard now has real clients and real filings instead of placeholders.";
-  }
-  return "";
+function Select({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: readonly { value: string; label: string }[];
+}) {
+  return (
+    <label className="block">
+      <div className="mb-2 text-sm font-medium text-slate-200">{label}</div>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-12 w-full rounded-xl border border-white/10 bg-[#020617] px-4 text-white outline-none transition focus:border-blue-500"
+      >
+        <option value="">Select...</option>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 function SetupPanel({
@@ -1835,96 +1688,91 @@ function SetupPanel({
   isBusinessOwner?: boolean;
 }) {
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
-      <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-5">
-        <div className="mb-4">
-          <div className="text-lg font-semibold text-white">{title}</div>
-          <p className="mt-1 text-sm text-slate-400">{subtitle}</p>
-        </div>
+    <div className="space-y-6 rounded-3xl border border-white/10 bg-white/[0.035] p-6">
+      <div>
+        <div className="text-sm font-semibold text-white">{title}</div>
+        <p className="mt-1 text-sm text-slate-400">{subtitle}</p>
+      </div>
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <Input
-            label={isBusinessOwner ? "Business name" : "Client name"}
-            value={form.name}
-            onChange={(value) => setForm((prev) => ({ ...prev, name: value }))}
-            placeholder={isBusinessOwner ? "Acme Manufacturing LLC" : "Acme Inc"}
-          />
-          <Select
-            label="State"
-            value={form.state}
-            onChange={(value) => setForm((prev) => ({ ...prev, state: value }))}
-            options={US_STATES}
-            placeholder="Select a state"
-          />
+      <div className="grid gap-5 md:grid-cols-2">
+        <Input
+          label={isBusinessOwner ? "Business name" : "Client name"}
+          value={form.name}
+          onChange={(value) =>
+            setForm((current) => ({
+              ...current,
+              name: value,
+            }))
+          }
+          placeholder={isBusinessOwner ? "Acme Holdings LLC" : "Hudson Valley Plumbing"}
+        />
+
+        <StateInput
+          label="State"
+          value={form.state}
+          onChange={(value) =>
+            setForm((current) => ({
+              ...current,
+              state: value,
+            }))
+          }
+        />
+
+        <div className="md:col-span-2">
           <Select
             label="Entity type"
             value={form.entityType}
             onChange={(value) =>
-              setForm((prev) => {
-                const nextTaxReturns = hasSelectedTaxReturn(prev.taxReturns)
-                  ? prev.taxReturns
-                  : getDefaultTaxReturnsForEntity(value);
-
-                return {
-                  ...prev,
-                  entityType: value,
-                  taxReturns: nextTaxReturns,
-                };
-              })
+              setForm((current) => ({
+                ...current,
+                entityType: value,
+                taxReturns: isBusinessOwner
+                  ? current.taxReturns
+                  : getDefaultTaxReturnsForEntity(value),
+              }))
             }
             options={ENTITY_TYPE_OPTIONS}
-            placeholder="Select an entity type"
           />
         </div>
       </div>
 
-      <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-5">
-        <div className="text-sm font-semibold text-white">
-          {isBusinessOwner ? "Compliance areas for your business" : "Services for this client"}
-        </div>
-        <p className="mt-1 text-sm text-slate-400">
-          {isBusinessOwner
-            ? "Due Horizon will generate only the filing tracks you switch on here."
-            : "Due Horizon will create workflows only for the services you switch on."}
-        </p>
-
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
+      <div>
+        <div className="mb-3 text-sm font-semibold text-white">Turn on the filings you need</div>
+        <div className="grid gap-2 md:grid-cols-2">
           {(Object.keys(serviceLabels) as ServiceKey[]).map((service) => (
             <ServiceToggle
               key={service}
               title={serviceLabels[service]}
               enabled={form.services[service]}
               onToggle={() =>
-                setForm((prev) => ({
-                  ...prev,
+                setForm((current) => ({
+                  ...current,
                   services: {
-                    ...prev.services,
-                    [service]: !prev.services[service],
+                    ...current.services,
+                    [service]: !current.services[service],
                   },
                 }))
               }
             />
           ))}
         </div>
+      </div>
 
-        <div className="mt-6 border-t border-white/10 pt-5">
-          <div className="text-sm font-semibold text-white">Income tax returns</div>
-          <p className="mt-1 text-sm text-slate-400">
-            Select the return types that apply for this client or business.
-          </p>
-
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
+      {!isBusinessOwner && (
+        <div>
+          <div className="mb-3 text-sm font-semibold text-white">Income tax returns</div>
+          <div className="grid gap-2 md:grid-cols-4">
             {(Object.keys(taxReturnLabels) as TaxReturnKey[]).map((taxReturn) => (
               <ServiceToggle
                 key={taxReturn}
                 title={taxReturnLabels[taxReturn]}
                 enabled={form.taxReturns[taxReturn]}
                 onToggle={() =>
-                  setForm((prev) => ({
-                    ...prev,
+                  setForm((current) => ({
+                    ...current,
                     taxReturns: {
-                      ...prev.taxReturns,
-                      [taxReturn]: !prev.taxReturns[taxReturn],
+                      ...current.taxReturns,
+                      [taxReturn]: !current.taxReturns[taxReturn],
                     },
                   }))
                 }
@@ -1932,15 +1780,15 @@ function SetupPanel({
             ))}
           </div>
         </div>
-      </div>
+      )}
 
       {form.services.sales_tax && (
         <SalesTaxFrequencySelector
           state={form.state}
           frequency={form.salesTaxFrequency}
           onChange={(frequency) =>
-            setForm((prev) => ({
-              ...prev,
+            setForm((current) => ({
+              ...current,
               salesTaxFrequency: frequency,
             }))
           }
@@ -1957,15 +1805,16 @@ function SetupPanel({
         <button
           type="button"
           onClick={onBack}
-          className="text-slate-400 transition hover:text-slate-200"
+          className="inline-flex items-center gap-2 text-slate-400 transition hover:text-slate-200"
         >
+          <ChevronLeft className="h-4 w-4" />
           Back
         </button>
         <button
           type="button"
           disabled={disabled}
           onClick={onSubmit}
-          className="h-12 cursor-pointer rounded-xl bg-blue-600 px-6 font-semibold transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+          className="h-12 rounded-xl bg-blue-600 px-6 font-semibold transition hover:bg-blue-500 disabled:opacity-40"
         >
           {buttonLabel}
         </button>
@@ -1992,33 +1841,56 @@ function SalesTaxFrequencySelector({
       </div>
       <p className="mt-1 text-sm text-slate-400">
         {state.trim().toUpperCase() === "NY"
-          ? "Choose whether this filer is monthly, quarterly, or annual so Due Horizon creates the right NY sales tax schedule."
+          ? "Choose monthly, quarterly, or annual so Due Horizon creates the right NY sales tax schedule."
           : "Choose how often this filer submits sales tax so Due Horizon generates the right recurring filings."}
       </p>
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        {(["monthly", "quarterly", "annual"] as FilingFrequency[]).map((option) => (
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        {(["monthly", "quarterly", "annual"] as FilingFrequency[]).map((value) => (
           <button
-            key={option}
+            key={value}
             type="button"
-            onClick={() => onChange(option)}
-            className={`cursor-pointer rounded-2xl border px-4 py-3 text-left text-sm transition ${
-              frequency === option
-                ? "border-cyan-300/40 bg-cyan-400/10 text-white"
+            onClick={() => onChange(value)}
+            className={`rounded-xl border px-4 py-3 text-sm transition ${
+              frequency === value
+                ? "border-cyan-300/30 bg-cyan-400/10 text-cyan-100"
                 : "border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]"
             }`}
           >
-            <div className="font-semibold capitalize">{option}</div>
-            <div className="mt-1 text-xs text-slate-400">
-              {option === "monthly"
-                ? "12 filings created"
-                : option === "quarterly"
-                  ? "4 filings created"
-                  : "1 filing created"}
-            </div>
+            {value.charAt(0).toUpperCase() + value.slice(1)}
           </button>
         ))}
       </div>
     </div>
+  );
+}
+
+function ServiceToggle({
+  title,
+  enabled,
+  onToggle,
+  compact = false,
+}: {
+  title: string;
+  enabled: boolean;
+  onToggle: () => void;
+  compact?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={`flex items-center justify-between rounded-xl border px-4 py-3 text-left transition ${
+        enabled
+          ? "border-cyan-300/30 bg-cyan-400/10 text-cyan-100"
+          : "border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]"
+      } ${compact ? "text-sm" : ""}`}
+    >
+      <span>{title}</span>
+      <CheckCircle2
+        className={`h-4 w-4 ${enabled ? "opacity-100" : "opacity-30"}`}
+      />
+    </button>
   );
 }
 
@@ -2039,27 +1911,19 @@ function PathCard({
     <button
       type="button"
       onClick={onClick}
-      className={`cursor-pointer rounded-3xl border p-6 text-left transition ${
+      className={`rounded-3xl border p-6 text-left transition ${
         active
-          ? "border-blue-400 bg-blue-500/10 shadow-[0_0_0_1px_rgba(96,165,250,0.15)]"
-          : "border-white/10 hover:bg-white/5"
+          ? "border-cyan-300/30 bg-cyan-400/10"
+          : "border-white/10 bg-white/[0.035] hover:bg-white/[0.05]"
       }`}
     >
-      <div className="mb-4 flex items-center justify-between gap-4">
-        <h3 className="text-xl font-semibold">{title}</h3>
-        <div
-          className={`h-5 w-5 rounded-full border ${
-            active ? "border-blue-400 bg-blue-400" : "border-white/20"
-          }`}
-        />
-      </div>
-
-      <p className="text-slate-400">{subtitle}</p>
-
-      <div className="mt-5 space-y-2">
+      <div className="text-lg font-semibold text-white">{title}</div>
+      <p className="mt-2 text-sm leading-6 text-slate-400">{subtitle}</p>
+      <div className="mt-5 space-y-3">
         {points.map((point) => (
-          <div key={point} className="text-sm text-slate-300">
-            • {point}
+          <div key={point} className="flex items-start gap-3 text-sm text-slate-300">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 text-cyan-300" />
+            <span>{point}</span>
           </div>
         ))}
       </div>
@@ -2067,161 +1931,32 @@ function PathCard({
   );
 }
 
-function Input({
-  label,
-  value,
-  onChange,
-  placeholder,
-  type = "text",
+function MiniInsight({
+  title,
+  body,
 }: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder?: string;
-  type?: string;
+  title: string;
+  body: string;
 }) {
   return (
-    <div>
-      <label className="text-xs uppercase tracking-[0.16em] text-slate-400">{label}</label>
-      <input
-        type={type}
-        inputMode={type === "number" ? "numeric" : undefined}
-        min={type === "number" ? 0 : undefined}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="mt-2 h-12 w-full rounded-xl border border-white/10 bg-[#020617] px-4 outline-none transition focus:border-blue-500"
-      />
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+      <div className="text-sm font-semibold text-white">{title}</div>
+      <p className="mt-1 text-sm leading-6 text-slate-400">{body}</p>
     </div>
   );
 }
 
-function Select({
-  label,
-  value,
-  onChange,
-  options,
-  placeholder,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: Array<{ value: string; label: string }>;
-  placeholder?: string;
-}) {
-  return (
-    <div>
-      <label className="text-xs uppercase tracking-[0.16em] text-slate-400">{label}</label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="mt-2 h-12 w-full rounded-xl border border-white/10 bg-[#020617] px-4 text-white outline-none transition focus:border-blue-500"
-      >
-        <option value="">{placeholder || "Select an option"}</option>
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-function Choice({
+function PreviewCard({
   title,
   subtitle,
-  active,
-  onClick,
-  badge,
-  highlight,
-  hidden = false,
 }: {
   title: string;
   subtitle: string;
-  active: boolean;
-  onClick: () => void;
-  badge?: string;
-  highlight?: boolean;
-  hidden?: boolean;
-}) {
-  if (hidden) return null;
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`w-full cursor-pointer rounded-2xl border p-5 text-left transition ${
-        active
-          ? "border-blue-400 bg-blue-500/10 shadow-[0_0_0_1px_rgba(96,165,250,0.15)]"
-          : "border-white/10 hover:bg-white/5"
-      } ${highlight ? "ring-1 ring-blue-400/20" : ""}`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="font-semibold">{title}</div>
-          <div className="mt-1 text-sm text-slate-400">{subtitle}</div>
-        </div>
-
-        {badge && (
-          <div className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-300">
-            {badge}
-          </div>
-        )}
-      </div>
-    </button>
-  );
-}
-
-function ServiceToggle({
-  title,
-  enabled,
-  onToggle,
-  compact = false,
-}: {
-  title: string;
-  enabled: boolean;
-  onToggle: () => void;
-  compact?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      className={`flex items-center justify-between rounded-2xl border px-4 ${
-        compact ? "py-3" : "py-4"
-      } transition ${
-        enabled
-          ? "border-blue-400 bg-blue-500/10 text-white"
-          : "border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/5"
-      }`}
-    >
-      <span className={compact ? "text-sm" : "text-sm font-medium"}>{title}</span>
-      <span
-        className={`inline-flex h-6 w-11 items-center rounded-full p-1 transition ${
-          enabled ? "justify-end bg-blue-500" : "justify-start bg-white/10"
-        }`}
-      >
-        <span className="h-4 w-4 rounded-full bg-white" />
-      </span>
-    </button>
-  );
-}
-
-function MiniInsight({ title, body }: { title: string; body: string }) {
-  return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-      <div className="font-semibold">{title}</div>
-      <p className="mt-2 text-sm leading-6 text-slate-400">{body}</p>
-    </div>
-  );
-}
-
-function PreviewCard({ title, subtitle }: { title: string; subtitle: string }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-      <div className="font-semibold">{title}</div>
-      <p className="mt-2 text-sm text-slate-400">{subtitle}</p>
+      <div className="text-sm font-semibold text-white">{title}</div>
+      <p className="mt-1 text-sm leading-6 text-slate-400">{subtitle}</p>
     </div>
   );
 }
@@ -2236,30 +1971,30 @@ function PreviewStatCard({
   note: string;
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
-      <div className="text-sm font-semibold text-slate-300">{title}</div>
-      <div className="mt-3 text-3xl font-semibold text-white">{value}</div>
-      <div className="mt-2 text-sm text-slate-400">{note}</div>
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+      <div className="text-xs uppercase tracking-[0.16em] text-slate-400">{title}</div>
+      <div className="mt-2 text-3xl font-semibold text-white">{value}</div>
+      <div className="mt-1 text-sm text-slate-400">{note}</div>
     </div>
   );
 }
 
-function LoadingRow({ label, delay = 0 }: { label: string; delay?: number }) {
+function LoadingRow({
+  label,
+  delay,
+}: {
+  label: string;
+  delay: number;
+}) {
   return (
     <motion.div
-      className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3"
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ opacity: 0.3, x: -6 }}
+      animate={{ opacity: 1, x: 0 }}
       transition={{ delay, duration: 0.35 }}
+      className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3"
     >
-      <span className="text-sm text-slate-300">{label}</span>
-      <motion.span
-        className="text-sm font-semibold text-blue-300"
-        animate={{ opacity: [0.35, 1, 0.35] }}
-        transition={{ duration: 1.2, repeat: Infinity }}
-      >
-        In progress
-      </motion.span>
+      <div className="h-2.5 w-2.5 rounded-full bg-cyan-300" />
+      <div className="text-sm text-slate-200">{label}</div>
     </motion.div>
   );
 }

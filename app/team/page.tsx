@@ -2,21 +2,22 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
-  ArrowRight,
   Bell,
   Building2,
   Calendar,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Crown,
   FileText,
   LayoutDashboard,
   LifeBuoy,
+  Loader2,
   LogOut,
   Mail,
   MoreHorizontal,
@@ -29,6 +30,8 @@ import {
 } from "lucide-react";
 
 type MemberRole = "owner" | "admin" | "member" | "unknown";
+type FirmType = "firm" | "business" | "unknown";
+type ToastTone = "success" | "error" | "info";
 
 type TeamMember = {
   id: string;
@@ -49,13 +52,12 @@ type PendingInvite = {
 };
 
 type FirmSummary = {
+  firmId: string | null;
   firmName: string;
-  firmType: "firm" | "business" | "unknown";
+  firmType: FirmType;
   plan: string;
   entityCount: number;
 };
-
-type ToastTone = "success" | "error" | "info";
 
 type ToastMessage = {
   id: number;
@@ -64,7 +66,32 @@ type ToastMessage = {
   body?: string;
 };
 
-const roleOptions: Exclude<MemberRole, "unknown">[] = ["owner", "admin", "member"];
+type SidebarNavItemProps = {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ size?: number; className?: string }>;
+  pathname: string;
+  collapsed: boolean;
+  badge?: string;
+};
+
+type TeamMenuProps = {
+  rowId: string;
+  openMenuId: string | null;
+  setOpenMenuId: React.Dispatch<React.SetStateAction<string | null>>;
+  children: ReactNode;
+};
+
+type TeamStatCardProps = {
+  label: string;
+  value: string;
+  sub: string;
+  icon: ReactNode;
+  accent: "cyan" | "yellow" | "green" | "blue";
+};
+
+const allInviteRoleOptions: Exclude<MemberRole, "unknown">[] = ["owner", "admin", "member"];
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function formatDate(value: string | null) {
   if (!value) return "—";
@@ -78,13 +105,14 @@ function formatDate(value: string | null) {
 }
 
 function titleCase(value: string) {
+  if (!value) return "";
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function roleBadge(role: MemberRole) {
   switch (role) {
     case "owner":
-      return "border-yellow-300/20 bg-yellow-400/10 text-yellow-200";
+      return "border-amber-300/20 bg-amber-400/10 text-amber-200";
     case "admin":
       return "border-cyan-300/20 bg-cyan-400/10 text-cyan-100";
     case "member":
@@ -98,38 +126,61 @@ function initialsFrom(value: string) {
   const cleaned = value.trim();
   if (!cleaned) return "DH";
   return cleaned
-    .split(" ")
+    .split(/\s+/)
+    .filter(Boolean)
     .map((part) => part[0])
     .join("")
     .slice(0, 2)
     .toUpperCase();
 }
 
-function niceMemberName(userId: string, email?: string | null) {
+function niceMemberName(email?: string | null, fallbackId?: string | null) {
   if (email) {
     const local = email.split("@")[0] || "";
-    return local
+    const formatted = local
       .split(/[._-]/g)
       .filter(Boolean)
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(" ");
+      .join(" ")
+      .trim();
+
+    if (formatted) return formatted;
   }
-  return `Member ${userId.slice(0, 6)}`;
+
+  if (fallbackId) {
+    return `Member ${fallbackId.slice(0, 6)}`;
+  }
+
+  return "Workspace Member";
+}
+
+function getPlanLabel(plan: string) {
+  if (!plan) return "Starter";
+  return plan
+    .split(/[_-]/g)
+    .filter(Boolean)
+    .map((part) => titleCase(part))
+    .join(" ");
 }
 
 export default function TeamPage() {
   const pathname = usePathname();
+  const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
+
   const profileRef = useRef<HTMLDivElement | null>(null);
+  const inviteModalRef = useRef<HTMLDivElement | null>(null);
 
   const [firmSummary, setFirmSummary] = useState<FirmSummary>({
+    firmId: null,
     firmName: "",
     firmType: "unknown",
     plan: "starter",
     entityCount: 0,
   });
   const [memberRole, setMemberRole] = useState<MemberRole>("unknown");
-  const [userInitials, setUserInitials] = useState("");
+  const [userInitials, setUserInitials] = useState("DH");
+  const [userEmail, setUserEmail] = useState("");
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
   const [search, setSearch] = useState("");
@@ -144,11 +195,15 @@ export default function TeamPage() {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   const canManageTeam = memberRole === "owner" || memberRole === "admin";
-  const businessNavLabel = firmSummary.firmType === "firm" ? "Clients" : "Businesses";
+  const isOwner = memberRole === "owner";
+  const entityNavLabel = firmSummary.firmType === "firm" ? "Clients" : "Businesses";
+  const planLabel = getPlanLabel(firmSummary.plan);
+  const inviteRoleOptions = isOwner ? allInviteRoleOptions : (["member"] as Exclude<MemberRole, "unknown">[]);
 
   function showToast(tone: ToastTone, title: string, body?: string) {
     const id = Date.now() + Math.floor(Math.random() * 1000);
     setToasts((prev) => [...prev, { id, tone, title, body }]);
+
     window.setTimeout(() => {
       setToasts((prev) => prev.filter((toast) => toast.id !== id));
     }, 3200);
@@ -157,11 +212,34 @@ export default function TeamPage() {
   useEffect(() => {
     const saved = window.localStorage.getItem("dh-sidebar-collapsed");
     setIsSidebarCollapsed(saved === "true");
+
+    try {
+      const rawInvites = window.localStorage.getItem("dh-team-pending-invites");
+      if (rawInvites) {
+        const parsed = JSON.parse(rawInvites) as PendingInvite[];
+        if (Array.isArray(parsed)) {
+          setPendingInvites(parsed);
+        }
+      }
+    } catch {
+      window.localStorage.removeItem("dh-team-pending-invites");
+    }
   }, []);
 
   useEffect(() => {
     window.localStorage.setItem("dh-sidebar-collapsed", String(isSidebarCollapsed));
   }, [isSidebarCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem("dh-team-pending-invites", JSON.stringify(pendingInvites));
+  }, [pendingInvites]);
+
+  useEffect(() => {
+    if (isOwner) return;
+    if (inviteRole !== "member") {
+      setInviteRole("member");
+    }
+  }, [isOwner, inviteRole]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -177,19 +255,36 @@ export default function TeamPage() {
       }
     }
 
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsProfileOpen(false);
+        setOpenMenuId(null);
+        setIsInviteModalOpen(false);
+      }
+    }
+
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
   }, []);
 
   useEffect(() => {
-    if (isInviteModalOpen) {
-      const scrollBarWidth = window.innerWidth - document.documentElement.clientWidth;
-      document.body.style.overflow = "hidden";
-      document.body.style.paddingRight = `${scrollBarWidth}px`;
-    } else {
+    if (!isInviteModalOpen) {
       document.body.style.overflow = "";
       document.body.style.paddingRight = "";
+      return;
     }
+
+    const scrollBarWidth = window.innerWidth - document.documentElement.clientWidth;
+    document.body.style.overflow = "hidden";
+    document.body.style.paddingRight = `${scrollBarWidth}px`;
+
+    const focusTarget = inviteModalRef.current?.querySelector<HTMLInputElement>("input");
+    focusTarget?.focus();
 
     return () => {
       document.body.style.overflow = "";
@@ -226,20 +321,29 @@ export default function TeamPage() {
 
     const {
       data: { user },
+      error: userError,
     } = await supabase.auth.getUser();
 
-    if (!user) {
+    if (userError) {
+      console.error("Failed to get user:", userError);
+      showToast("error", "Couldn’t load your session");
       setLoading(false);
       return;
     }
 
-    const nameFromUser =
+    if (!user) {
+      router.push("/login");
+      return;
+    }
+
+    const displayName =
       user.user_metadata?.full_name ||
       user.user_metadata?.name ||
       user.email ||
-      "";
+      "Due Horizon";
 
-    setUserInitials(initialsFrom(nameFromUser));
+    setUserInitials(initialsFrom(displayName));
+    setUserEmail(user.email ?? "");
 
     const resolvedFirmId = await resolveFirmId(
       user.id,
@@ -251,17 +355,12 @@ export default function TeamPage() {
     );
 
     if (!resolvedFirmId) {
+      showToast("error", "No workspace was found for this account");
       setLoading(false);
       return;
     }
 
-    const [
-      { data: membership },
-      { data: firm },
-      { data: clients },
-      { data: organizations },
-      { data: firmMembers, error: membersError },
-    ] = await Promise.all([
+    const [membershipResult, firmResult, clientsResult, organizationsResult, membersResult] = await Promise.all([
       supabase
         .from("firm_members")
         .select("role")
@@ -273,52 +372,75 @@ export default function TeamPage() {
         .select("id, name, type, plan")
         .eq("id", resolvedFirmId)
         .single(),
-      supabase
-        .from("clients")
-        .select("id")
-        .eq("firm_id", resolvedFirmId),
+      supabase.from("clients").select("id", { count: "exact", head: true }).eq("firm_id", resolvedFirmId),
       supabase
         .from("organizations")
-        .select("id")
+        .select("id", { count: "exact", head: true })
         .eq("firm_id", resolvedFirmId),
       supabase
         .from("firm_members")
-        .select("id, user_id, role, created_at")
+        .select("id, user_id, role, created_at, profiles:user_id (full_name, email)")
         .eq("firm_id", resolvedFirmId)
         .order("created_at", { ascending: true }),
     ]);
 
-    if (membersError) {
-      console.error(membersError);
+    if (firmResult.error) {
+      console.error("Failed to load firm:", firmResult.error);
+      showToast("error", "Couldn’t load workspace details");
+      setLoading(false);
+      return;
+    }
+
+    if (membersResult.error) {
+      console.error("Failed to load members:", membersResult.error);
       showToast("error", "Couldn’t load team members");
       setLoading(false);
       return;
     }
 
-    const roleValue = String(membership?.role || "unknown").toLowerCase();
+    const membershipRole = String(membershipResult.data?.role || "unknown").toLowerCase();
     setMemberRole(
-      roleValue === "owner" || roleValue === "admin" || roleValue === "member"
-        ? (roleValue as MemberRole)
+      membershipRole === "owner" || membershipRole === "admin" || membershipRole === "member"
+        ? (membershipRole as MemberRole)
         : "unknown"
     );
 
-    const mappedMembers: TeamMember[] = ((firmMembers || []) as Array<{
+    type MemberRow = {
       id: string;
       user_id: string;
       role: string | null;
       created_at: string | null;
-    }>).map((memberRow) => {
-      const derivedRole = String(memberRow.role || "member").toLowerCase();
-      const safeRole =
-        derivedRole === "owner" || derivedRole === "admin" || derivedRole === "member"
-          ? (derivedRole as MemberRole)
+      profiles:
+        | {
+            full_name?: string | null;
+            email?: string | null;
+          }
+        | {
+            full_name?: string | null;
+            email?: string | null;
+          }[]
+        | null;
+    };
+
+    const mappedMembers: TeamMember[] = ((membersResult.data || []) as MemberRow[]).map((memberRow) => {
+      const safeRoleValue = String(memberRow.role || "member").toLowerCase();
+      const safeRole: MemberRole =
+        safeRoleValue === "owner" || safeRoleValue === "admin" || safeRoleValue === "member"
+          ? (safeRoleValue as MemberRole)
           : "member";
+
+      const profile = Array.isArray(memberRow.profiles)
+        ? memberRow.profiles[0]
+        : memberRow.profiles;
+
+      const email = profile?.email?.trim() || "";
+      const fullName = profile?.full_name?.trim() || "";
 
       return {
         id: memberRow.id,
         userId: memberRow.user_id,
-        name: niceMemberName(memberRow.user_id),
-        email: `${memberRow.user_id.slice(0, 8)}@workspace.member`,
+        name: fullName || niceMemberName(email, memberRow.user_id),
+        email: email || "No email available",
         role: safeRole,
         joinedAt: memberRow.created_at,
         status: "active",
@@ -327,30 +449,31 @@ export default function TeamPage() {
 
     setMembers(mappedMembers);
     setFirmSummary({
-      firmName: firm?.name || "",
-      firmType: firm?.type || "unknown",
-      plan: firm?.plan || "starter",
+      firmId: firmResult.data.id,
+      firmName: firmResult.data.name || "Due Horizon Workspace",
+      firmType: (firmResult.data.type as FirmType) || "unknown",
+      plan: firmResult.data.plan || "starter",
       entityCount:
-        firm?.type === "firm"
-          ? (clients || []).length
-          : (organizations || []).length,
+        firmResult.data.type === "firm"
+          ? clientsResult.count ?? 0
+          : organizationsResult.count ?? 0,
     });
     setLoading(false);
   }
 
   useEffect(() => {
-    loadTeamPage();
+    void loadTeamPage();
   }, []);
 
   async function submitInvite() {
     const email = inviteEmail.trim().toLowerCase();
+
     if (!email) {
       showToast("error", "Email is required");
       return;
     }
 
-    const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-    if (!emailValid) {
+    if (!emailRegex.test(email)) {
       showToast("error", "Enter a valid email address");
       return;
     }
@@ -360,40 +483,46 @@ export default function TeamPage() {
       return;
     }
 
-    setInviteSubmitting(true);
-
-    const duplicateInvite = pendingInvites.some((invite) => invite.email === email);
-    if (duplicateInvite) {
-      showToast("info", "Invite already staged", "That email is already in the pending list.");
-      setInviteSubmitting(false);
+    if (!isOwner && inviteRole !== "member") {
+      showToast("error", "Only owners can invite admins or owners");
       return;
     }
 
-    const duplicateMember = members.some((member) => member.email === email);
+    const duplicateInvite = pendingInvites.some((invite) => invite.email.toLowerCase() === email);
+    if (duplicateInvite) {
+      showToast("info", "Invite already pending", "That email is already in the pending list.");
+      return;
+    }
+
+    const duplicateMember = members.some((member) => member.email.toLowerCase() === email);
     if (duplicateMember) {
       showToast("info", "Already on this workspace", "That person is already a member.");
-      setInviteSubmitting(false);
       return;
     }
 
-    const newInvite: PendingInvite = {
-      id: `${Date.now()}`,
-      email,
-      role: inviteRole,
-      sentAt: new Date().toISOString(),
-      status: "Pending",
-    };
+    setInviteSubmitting(true);
 
-    setPendingInvites((prev) => [newInvite, ...prev]);
-    setInviteEmail("");
-    setInviteRole("member");
-    setInviteSubmitting(false);
-    setIsInviteModalOpen(false);
-    showToast(
-      "success",
-      "Invite staged",
-      "This UI is ready. Wire the submit action to your real invite backend next."
-    );
+    try {
+      const newInvite: PendingInvite = {
+        id: `${Date.now()}`,
+        email,
+        role: inviteRole,
+        sentAt: new Date().toISOString(),
+        status: "Pending",
+      };
+
+      setPendingInvites((prev) => [newInvite, ...prev]);
+      setInviteEmail("");
+      setInviteRole("member");
+      setIsInviteModalOpen(false);
+      showToast(
+        "success",
+        "Invite staged",
+        "This UI is ready. Hook Send Invite to your real invite table or edge function next."
+      );
+    } finally {
+      setInviteSubmitting(false);
+    }
   }
 
   function removePendingInvite(id: string) {
@@ -402,19 +531,26 @@ export default function TeamPage() {
     showToast("success", "Pending invite removed");
   }
 
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.push("/login");
+  }
+
   const filteredMembers = members.filter((member) => {
-    const q = search.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      member.name.toLowerCase().includes(q) ||
-      member.email.toLowerCase().includes(q) ||
-      member.role.toLowerCase().includes(q)
-    );
+    const query = search.trim().toLowerCase();
+    if (!query) return true;
+
+    return [member.name, member.email, member.role]
+      .join(" ")
+      .toLowerCase()
+      .includes(query);
   });
 
   const owners = members.filter((member) => member.role === "owner").length;
   const admins = members.filter((member) => member.role === "admin").length;
   const totalSeatsShown = members.length + pendingInvites.length;
+  const currentMember = members.find((member) => member.email.toLowerCase() === userEmail.toLowerCase());
+  const searchSummary = search.trim() ? `${filteredMembers.length} results` : `${members.length} members`;
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.08),transparent_28%),linear-gradient(to_bottom,#07111f,#020617)] text-white">
@@ -423,14 +559,18 @@ export default function TeamPage() {
           <div className="overflow-hidden rounded-[26px] border border-white/10 bg-[linear-gradient(to_bottom,rgba(11,21,38,0.96),rgba(8,15,28,0.98))] shadow-[0_30px_80px_rgba(0,0,0,0.45)]">
             <div
               className="lg:grid"
-              style={{ gridTemplateColumns: isSidebarCollapsed ? "88px minmax(0,1fr)" : "272px minmax(0,1fr)" }}
+              style={{
+                gridTemplateColumns: isSidebarCollapsed ? "88px minmax(0,1fr)" : "272px minmax(0,1fr)",
+              }}
             >
               <aside
-                className={`hidden border-r border-white/10 bg-[linear-gradient(to_bottom,rgba(8,15,28,0.99),rgba(6,12,23,0.99))] lg:flex lg:min-h-[calc(100vh-9rem)] lg:flex-col transition-all duration-300 ease-out ${isSidebarCollapsed ? "px-3" : ""}`}
+                className={`hidden border-r border-white/10 bg-[linear-gradient(to_bottom,rgba(8,15,28,0.99),rgba(6,12,23,0.99))] lg:flex lg:min-h-[calc(100vh-9rem)] lg:flex-col transition-all duration-300 ease-out ${
+                  isSidebarCollapsed ? "px-3" : ""
+                }`}
               >
                 <div className={`border-b border-white/10 ${isSidebarCollapsed ? "px-2 py-6" : "px-5 py-6"} transition-all duration-300`}>
-                  <div className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "justify-between gap-4"} transition-all duration-300`}>
-                    <div className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "gap-4"} transition-all duration-300`}>
+                  <div className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "justify-between gap-4"}`}>
+                    <div className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "gap-4"}`}>
                       <div className="relative flex items-center justify-center transition-all duration-300 hover:scale-[1.05]">
                         <div className="absolute inset-0 rounded-xl bg-cyan-400/8 blur-xl" />
                         <Image
@@ -445,7 +585,7 @@ export default function TeamPage() {
                       <div
                         className={`grid transition-all duration-300 ease-out ${
                           isSidebarCollapsed
-                            ? "max-w-0 grid-cols-[0fr] opacity-0 translate-x-[-8px] overflow-hidden"
+                            ? "max-w-0 grid-cols-[0fr] opacity-0 -translate-x-2 overflow-hidden"
                             : "max-w-[160px] grid-cols-[1fr] opacity-100 translate-x-0"
                         }`}
                       >
@@ -486,9 +626,7 @@ export default function TeamPage() {
 
                 <div className={`flex-1 ${isSidebarCollapsed ? "py-5" : "px-4 py-5"}`}>
                   {!isSidebarCollapsed && (
-                    <div className="mb-3 px-3 text-[11px] font-semibold tracking-[0.18em] text-slate-500">
-                      NAVIGATION
-                    </div>
+                    <div className="mb-3 px-3 text-[11px] font-semibold tracking-[0.18em] text-slate-500">NAVIGATION</div>
                   )}
 
                   <nav className="space-y-2">
@@ -496,7 +634,7 @@ export default function TeamPage() {
                     <SidebarNavItem href="/filings" label="Filings" icon={FileText} pathname={pathname} collapsed={isSidebarCollapsed} />
                     <SidebarNavItem href="/calendar" label="Calendar" icon={Calendar} pathname={pathname} collapsed={isSidebarCollapsed} />
                     <SidebarNavItem href="/reports" label="Reports" icon={CheckCircle2} pathname={pathname} collapsed={isSidebarCollapsed} />
-                    <SidebarNavItem href="/businesses" label={businessNavLabel} icon={Building2} pathname={pathname} collapsed={isSidebarCollapsed} />
+                    <SidebarNavItem href="/businesses" label={entityNavLabel} icon={Building2} pathname={pathname} collapsed={isSidebarCollapsed} />
                     <SidebarNavItem
                       href="/team"
                       label="Team"
@@ -515,7 +653,7 @@ export default function TeamPage() {
                           <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">WORKSPACE</div>
                           <div className="mt-2 text-sm font-semibold text-white">{firmSummary.firmName || "Due Horizon"}</div>
                           <div className="mt-1 text-xs text-slate-400">
-                            {firmSummary.plan} plan • {firmSummary.firmType === "firm" ? "Accounting firm" : firmSummary.firmType === "business" ? "Business" : "Workspace"}
+                            {planLabel} • {firmSummary.firmType === "firm" ? "Accounting firm" : firmSummary.firmType === "business" ? "Business" : "Workspace"}
                           </div>
                         </div>
                         <div className="rounded-full border border-cyan-300/15 bg-cyan-400/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-200">
@@ -537,12 +675,13 @@ export default function TeamPage() {
                     <div className="rounded-2xl border border-cyan-400/10 bg-[linear-gradient(135deg,rgba(34,211,238,0.12),rgba(59,130,246,0.08),rgba(255,255,255,0.02))] p-4 shadow-[0_0_30px_rgba(34,211,238,0.08)]">
                       <div className="text-sm font-semibold text-white">Need another seat?</div>
                       <div className="mt-1 text-xs leading-5 text-slate-300">
-                        Team management belongs here. Keep invites, roles, and access clean and visible.
+                        Keep invites, permissions, and workspace access clean as your team grows.
                       </div>
                       <button
                         type="button"
                         onClick={() => setIsInviteModalOpen(true)}
-                        className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.18)] transition hover:from-cyan-300 hover:to-blue-400"
+                        disabled={!canManageTeam}
+                        className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.18)] transition hover:from-cyan-300 hover:to-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Invite Member
                       </button>
@@ -551,7 +690,8 @@ export default function TeamPage() {
                     <button
                       type="button"
                       onClick={() => setIsInviteModalOpen(true)}
-                      className="flex h-12 w-full items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-400/10 text-cyan-200 transition hover:bg-cyan-400/15"
+                      disabled={!canManageTeam}
+                      className="flex h-12 w-full items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-400/10 text-cyan-200 transition hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
                       title="Invite Member"
                     >
                       <UserPlus size={18} />
@@ -583,9 +723,7 @@ export default function TeamPage() {
 
                       <div className="hidden lg:block">
                         <div className="text-xs font-semibold tracking-[0.18em] text-cyan-300/80">TEAM</div>
-                        <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
-                          Manage everyone in this workspace
-                        </h1>
+                        <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">Manage everyone in this workspace</h1>
                         <p className="mt-2 text-slate-400">
                           Invite staff, manage roles, and keep workspace access clean as you grow.
                         </p>
@@ -596,7 +734,8 @@ export default function TeamPage() {
                       <button
                         type="button"
                         onClick={() => setIsInviteModalOpen(true)}
-                        className="inline-flex items-center gap-2 rounded-xl border border-cyan-300/20 bg-cyan-400/10 px-4 py-2 text-sm text-cyan-100 transition hover:bg-cyan-400/15"
+                        disabled={!canManageTeam}
+                        className="inline-flex items-center gap-2 rounded-xl border border-cyan-300/20 bg-cyan-400/10 px-4 py-2 text-sm text-cyan-100 transition hover:bg-cyan-400/15 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <UserPlus size={16} />
                         Invite Member
@@ -606,12 +745,13 @@ export default function TeamPage() {
                         href="/settings"
                         className="hidden sm:inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
                       >
-                        Workspace Settings →
+                        Workspace Settings
                       </Link>
 
                       <button
                         type="button"
                         className="hidden sm:flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-slate-300 transition hover:bg-white/10"
+                        aria-label="Notifications"
                       >
                         <Bell size={18} />
                       </button>
@@ -625,15 +765,17 @@ export default function TeamPage() {
                               ? "border-cyan-300/40 bg-white/10 shadow-[0_0_18px_rgba(34,211,238,0.14)]"
                               : "border-white/10 bg-white/5 hover:bg-white/10"
                           }`}
+                          aria-expanded={isProfileOpen}
+                          aria-haspopup="menu"
                         >
                           <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 text-xs font-semibold text-slate-950">
                             {userInitials}
                           </div>
                           <div className="hidden text-left leading-tight sm:block">
-                            <div className="text-sm font-semibold">{userInitials}</div>
+                            <div className="text-sm font-semibold text-white">{userEmail || firmSummary.firmName || "Workspace"}</div>
                             <div className="text-xs text-slate-400">{firmSummary.firmName}</div>
                           </div>
-                          <div className={`text-xs text-slate-400 transition ${isProfileOpen ? "rotate-180" : ""}`}>⌄</div>
+                          <ChevronDown className={`h-4 w-4 text-slate-400 transition ${isProfileOpen ? "rotate-180" : ""}`} />
                         </button>
 
                         {isProfileOpen && (
@@ -643,14 +785,16 @@ export default function TeamPage() {
                                 <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 text-sm font-semibold text-slate-950">
                                   {userInitials}
                                 </div>
-                                <div>
-                                  <div className="text-sm font-semibold text-white">{firmSummary.firmName}</div>
-                                  <div className="mt-1 text-xs text-slate-400">
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-semibold text-white">{firmSummary.firmName}</div>
+                                  <div className="mt-1 truncate text-xs text-slate-400">
                                     {firmSummary.firmType === "firm"
                                       ? "Accounting firm"
                                       : firmSummary.firmType === "business"
-                                      ? "Business"
-                                      : "Workspace"} • {memberRole}
+                                        ? "Business"
+                                        : "Workspace"}
+                                    {" • "}
+                                    {titleCase(memberRole)}
                                   </div>
                                 </div>
                               </div>
@@ -665,7 +809,16 @@ export default function TeamPage() {
 
                             <div className="py-2">
                               <DropdownItem href="/support" label="Help / Support" icon={<LifeBuoy size={15} />} />
-                              <DropdownItem href="/logout" label="Logout" icon={<LogOut size={15} />} danger />
+                              <button
+                                type="button"
+                                onClick={handleLogout}
+                                className="flex w-full items-center gap-3 px-4 py-3 text-sm text-red-300 transition hover:bg-red-500/10"
+                              >
+                                <span className="text-red-300">
+                                  <LogOut size={15} />
+                                </span>
+                                <span>Logout</span>
+                              </button>
                             </div>
                           </div>
                         )}
@@ -678,7 +831,7 @@ export default function TeamPage() {
                     <MobileNavPill href="/filings" label="Filings" pathname={pathname} />
                     <MobileNavPill href="/calendar" label="Calendar" pathname={pathname} />
                     <MobileNavPill href="/reports" label="Reports" pathname={pathname} />
-                    <MobileNavPill href="/businesses" label={businessNavLabel} pathname={pathname} />
+                    <MobileNavPill href="/businesses" label={entityNavLabel} pathname={pathname} />
                     <MobileNavPill href="/team" label="Team" pathname={pathname} />
                     <MobileNavPill href="/settings" label="Settings" pathname={pathname} />
                   </div>
@@ -688,8 +841,8 @@ export default function TeamPage() {
                   <div className="mx-auto max-w-[1280px]">
                     <div className="mb-5 flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.18em] text-slate-500">
                       <span>Plan</span>
-                      <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-slate-300">{firmSummary.plan}</span>
-                      <span className="rounded-full border border-cyan-300/15 bg-cyan-400/10 px-2 py-1 text-cyan-200">{memberRole}</span>
+                      <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-slate-300">{planLabel}</span>
+                      <span className="rounded-full border border-cyan-300/15 bg-cyan-400/10 px-2 py-1 text-cyan-200">{titleCase(memberRole)}</span>
                     </div>
 
                     <div className="grid items-stretch gap-6 md:grid-cols-2 xl:grid-cols-4">
@@ -706,7 +859,7 @@ export default function TeamPage() {
                             <div>
                               <div className="text-sm font-semibold text-white">Workspace members</div>
                               <div className="mt-1 text-sm text-slate-400">
-                                Owners can manage billing and roles. Admins can help run the workspace.
+                                The workspace creator is the owner. Only owners can assign elevated roles. Admins can invite members and help run the workspace.
                               </div>
                             </div>
 
@@ -722,80 +875,88 @@ export default function TeamPage() {
                               />
                             </div>
                           </div>
+
+                          <div className="mt-3 text-xs text-slate-500">{searchSummary}</div>
                         </div>
 
                         {loading ? (
-                          <div className="px-5 py-8 text-sm text-slate-400">Loading team members...</div>
+                          <div className="flex items-center gap-3 px-5 py-8 text-sm text-slate-400">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Loading team members...
+                          </div>
                         ) : filteredMembers.length === 0 ? (
                           <div className="px-5 py-8 text-sm text-slate-400">No members match your search.</div>
                         ) : (
                           <div className="divide-y divide-white/5">
-                            {filteredMembers.map((member) => (
-                              <div
-                                key={member.id}
-                                className="flex flex-col gap-4 px-5 py-4 lg:flex-row lg:items-center lg:justify-between"
-                              >
-                                <div className="flex min-w-0 items-center gap-4">
-                                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-500 text-sm font-semibold text-slate-950">
-                                    {initialsFrom(member.name)}
-                                  </div>
+                            {filteredMembers.map((member) => {
+                              const canEditMember = canManageTeam && member.role !== "owner";
 
-                                  <div className="min-w-0">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <div className="text-sm font-medium text-white sm:text-base">{member.name}</div>
-                                      <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold tracking-[0.16em] ${roleBadge(member.role)}`}>
-                                        {titleCase(member.role)}
-                                      </span>
+                              return (
+                                <div key={member.id} className="flex flex-col gap-4 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+                                  <div className="flex min-w-0 items-center gap-4">
+                                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-500 text-sm font-semibold text-slate-950">
+                                      {initialsFrom(member.name)}
                                     </div>
-                                    <div className="mt-1 text-sm text-slate-400">{member.email}</div>
-                                    <div className="mt-1 text-xs text-slate-500">Joined {formatDate(member.joinedAt)}</div>
+
+                                    <div className="min-w-0">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <div className="text-sm font-medium text-white sm:text-base">{member.name}</div>
+                                        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold tracking-[0.16em] ${roleBadge(member.role)}`}>
+                                          {titleCase(member.role)}
+                                        </span>
+                                      </div>
+                                      <div className="mt-1 truncate text-sm text-slate-400">{member.email}</div>
+                                      <div className="mt-1 text-xs text-slate-500">Joined {formatDate(member.joinedAt)}</div>
+                                    </div>
                                   </div>
-                                </div>
 
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 transition hover:bg-white/10"
-                                  >
-                                    {member.role === "owner" ? "Owner" : "Role"}
-                                  </button>
+                                  <div className="flex items-center gap-2">
+                                    <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">
+                                      {member.role === "owner" ? "Owner" : titleCase(member.role)}
+                                    </div>
 
-                                  <TeamMenu rowId={member.id} openMenuId={openMenuId} setOpenMenuId={setOpenMenuId}>
-                                    <button
-                                      type="button"
-                                      onClick={() => setOpenMenuId(null)}
-                                      className="block w-full px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/5"
-                                    >
-                                      View member
-                                    </button>
-                                    {member.role !== "owner" && (
+                                    <TeamMenu rowId={member.id} openMenuId={openMenuId} setOpenMenuId={setOpenMenuId}>
                                       <button
                                         type="button"
                                         onClick={() => {
                                           setOpenMenuId(null);
-                                          showToast("info", "Role changes next", "Wire these actions to your permissions backend when ready.");
+                                          showToast("info", "Member details next", "Hook this to a slide-over or profile modal if you want deeper team management.");
                                         }}
                                         className="block w-full px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/5"
                                       >
-                                        Change role
+                                        View member
                                       </button>
-                                    )}
-                                    {member.role !== "owner" && (
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setOpenMenuId(null);
-                                          showToast("info", "Remove member next", "Hook this action to your workspace membership delete flow.");
-                                        }}
-                                        className="block w-full px-4 py-3 text-left text-sm text-red-300 transition hover:bg-red-500/10"
-                                      >
-                                        Remove from workspace
-                                      </button>
-                                    )}
-                                  </TeamMenu>
+
+                                      {canEditMember && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setOpenMenuId(null);
+                                            showToast("info", "Role changes next", "Wire this to your membership permissions update flow.");
+                                          }}
+                                          className="block w-full px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/5"
+                                        >
+                                          Change role
+                                        </button>
+                                      )}
+
+                                      {canEditMember && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setOpenMenuId(null);
+                                            showToast("info", "Remove member next", "Hook this to your workspace membership delete flow.");
+                                          }}
+                                          className="block w-full px-4 py-3 text-left text-sm text-red-300 transition hover:bg-red-500/10"
+                                        >
+                                          Remove from workspace
+                                        </button>
+                                      )}
+                                    </TeamMenu>
+                                  </div>
                                 </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         )}
                       </div>
@@ -807,7 +968,7 @@ export default function TeamPage() {
                               <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">INVITE FLOW</div>
                               <div className="mt-2 text-lg font-semibold text-white">Add staff fast</div>
                               <div className="mt-2 text-sm leading-7 text-slate-300">
-                                This page gives the owner a clear home for invites and role management instead of burying it in settings.
+                                Give owners and admins a clear home for invites and permissions instead of burying it inside settings.
                               </div>
                             </div>
                             <div className="rounded-2xl border border-cyan-300/15 bg-cyan-400/10 p-3 text-cyan-200">
@@ -819,7 +980,8 @@ export default function TeamPage() {
                             <button
                               type="button"
                               onClick={() => setIsInviteModalOpen(true)}
-                              className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.18)] transition hover:from-cyan-300 hover:to-blue-400"
+                              disabled={!canManageTeam}
+                              className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.18)] transition hover:from-cyan-300 hover:to-blue-400 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               Invite Team Member
                             </button>
@@ -830,12 +992,18 @@ export default function TeamPage() {
                               Workspace Settings
                             </Link>
                           </div>
+
+                          {!canManageTeam && (
+                            <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+                              You’re currently a {memberRole}. Only owners and admins can send invites.
+                            </div>
+                          )}
                         </div>
 
                         <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03]">
                           <div className="border-b border-white/10 px-5 py-4">
                             <div className="text-sm font-semibold text-white">Pending invites</div>
-                            <div className="mt-1 text-sm text-slate-400">These are staged in the UI and ready for your real invite backend hookup.</div>
+                            <div className="mt-1 text-sm text-slate-400">These are staged in the UI and ready for your real invite backend hookup. Elevated roles should only be honored by the backend when the sender is an owner.</div>
                           </div>
 
                           {pendingInvites.length === 0 ? (
@@ -846,7 +1014,7 @@ export default function TeamPage() {
                                 <div key={invite.id} className="flex flex-col gap-4 px-5 py-4">
                                   <div className="flex items-start justify-between gap-4">
                                     <div className="min-w-0">
-                                      <div className="text-sm font-medium text-white">{invite.email}</div>
+                                      <div className="truncate text-sm font-medium text-white">{invite.email}</div>
                                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
                                         <span className={`inline-flex items-center rounded-full border px-2.5 py-1 font-semibold tracking-[0.16em] ${roleBadge(invite.role)}`}>
                                           {titleCase(invite.role)}
@@ -881,6 +1049,34 @@ export default function TeamPage() {
                             </div>
                           )}
                         </div>
+
+                        <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">ACCESS MODEL</div>
+                              <div className="mt-2 text-lg font-semibold text-white">Clear permissions</div>
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-slate-200">
+                              <ShieldCheck size={18} />
+                            </div>
+                          </div>
+
+                          <div className="mt-4 space-y-3 text-sm text-slate-300">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                              <span className="text-white">Owner</span> — full billing, member, and workspace control.
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                              <span className="text-white">Admin</span> — can manage people and operations, but not owner-only actions.
+                            </div>
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                              <span className="text-white">Member</span> — standard workspace access inside assigned areas.
+                            </div>
+                          </div>
+
+                          {!isOwner && (
+                            <div className="mt-4 text-xs text-slate-500">Owner-only billing and seat controls should stay locked outside this page.</div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -893,13 +1089,16 @@ export default function TeamPage() {
 
       {isInviteModalOpen && (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-xl overflow-hidden rounded-[28px] border border-white/10 bg-[linear-gradient(to_bottom,rgba(12,21,37,0.98),rgba(8,15,28,0.98))] shadow-[0_30px_80px_rgba(0,0,0,0.55)]">
+          <div
+            ref={inviteModalRef}
+            className="w-full max-w-xl overflow-hidden rounded-[28px] border border-white/10 bg-[linear-gradient(to_bottom,rgba(12,21,37,0.98),rgba(8,15,28,0.98))] shadow-[0_30px_80px_rgba(0,0,0,0.55)]"
+          >
             <div className="flex items-start justify-between border-b border-white/10 px-5 py-5">
               <div>
                 <div className="text-xs font-semibold tracking-[0.18em] text-cyan-300/80">INVITE MEMBER</div>
                 <div className="mt-2 text-xl font-semibold text-white">Add someone to the workspace</div>
                 <div className="mt-2 text-sm text-slate-400">
-                  This modal is ready for your real invite backend. Right now it stages pending invites in the UI.
+                  Owners can invite admins or members. Admins can invite members only.
                 </div>
               </div>
 
@@ -919,6 +1118,12 @@ export default function TeamPage() {
                 <input
                   value={inviteEmail}
                   onChange={(e) => setInviteEmail(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void submitInvite();
+                    }
+                  }}
                   placeholder="name@company.com"
                   className="w-full rounded-2xl border border-white/10 bg-white/[0.055] px-4 py-3 text-sm text-white placeholder:text-slate-500 outline-none transition focus:border-cyan-300/40 focus:bg-white/[0.07]"
                 />
@@ -927,7 +1132,7 @@ export default function TeamPage() {
               <div>
                 <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Role</div>
                 <div className="grid gap-3 sm:grid-cols-3">
-                  {roleOptions.map((role) => {
+                  {inviteRoleOptions.map((role) => {
                     const selected = inviteRole === role;
                     return (
                       <button
@@ -945,8 +1150,8 @@ export default function TeamPage() {
                           {role === "owner"
                             ? "Full workspace control"
                             : role === "admin"
-                            ? "Manage team and workflow"
-                            : "Work inside assigned areas"}
+                              ? "Manage team and workflow"
+                              : "Work inside assigned areas"}
                         </div>
                       </button>
                     );
@@ -972,10 +1177,11 @@ export default function TeamPage() {
               </button>
               <button
                 type="button"
-                onClick={submitInvite}
+                onClick={() => void submitInvite()}
                 disabled={inviteSubmitting}
-                className="rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.22)] transition hover:from-cyan-300 hover:to-blue-400 disabled:cursor-not-allowed disabled:opacity-70"
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.22)] transition hover:from-cyan-300 hover:to-blue-400 disabled:cursor-not-allowed disabled:opacity-70"
               >
+                {inviteSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {inviteSubmitting ? "Sending..." : "Send Invite"}
               </button>
             </div>
@@ -991,8 +1197,8 @@ export default function TeamPage() {
               toast.tone === "success"
                 ? "border-emerald-400/20 bg-[linear-gradient(180deg,rgba(6,78,59,0.32),rgba(4,47,46,0.24))]"
                 : toast.tone === "error"
-                ? "border-red-400/20 bg-[linear-gradient(180deg,rgba(127,29,29,0.32),rgba(69,10,10,0.24))]"
-                : "border-cyan-300/20 bg-[linear-gradient(180deg,rgba(8,47,73,0.32),rgba(15,23,42,0.24))]"
+                  ? "border-red-400/20 bg-[linear-gradient(180deg,rgba(127,29,29,0.32),rgba(69,10,10,0.24))]"
+                  : "border-cyan-300/20 bg-[linear-gradient(180deg,rgba(8,47,73,0.32),rgba(15,23,42,0.24))]"
             }`}
           >
             <div className="text-sm font-semibold text-white">{toast.title}</div>
@@ -1024,19 +1230,7 @@ function WorkspaceStat({
   );
 }
 
-function TeamStatCard({
-  label,
-  value,
-  sub,
-  icon,
-  accent,
-}: {
-  label: string;
-  value: string;
-  sub: string;
-  icon: ReactNode;
-  accent: "cyan" | "yellow" | "green" | "blue";
-}) {
+function TeamStatCard({ label, value, sub, icon, accent }: TeamStatCardProps) {
   const accentMap = {
     cyan: "border-cyan-300/15 bg-[linear-gradient(180deg,rgba(8,47,73,0.18),rgba(15,23,42,0.06))] text-cyan-200",
     yellow: "border-yellow-300/15 bg-[linear-gradient(180deg,rgba(202,138,4,0.16),rgba(120,53,15,0.05))] text-yellow-200",
@@ -1058,17 +1252,7 @@ function TeamStatCard({
   );
 }
 
-function TeamMenu({
-  rowId,
-  openMenuId,
-  setOpenMenuId,
-  children,
-}: {
-  rowId: string;
-  openMenuId: string | null;
-  setOpenMenuId: React.Dispatch<React.SetStateAction<string | null>>;
-  children: ReactNode;
-}) {
+function TeamMenu({ rowId, openMenuId, setOpenMenuId, children }: TeamMenuProps) {
   const isOpen = openMenuId === rowId;
 
   return (
@@ -1076,13 +1260,15 @@ function TeamMenu({
       <button
         type="button"
         onClick={() => setOpenMenuId((prev) => (prev === rowId ? null : rowId))}
-        className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-300 hover:bg-white/10"
+        className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-300 transition hover:bg-white/10"
+        aria-expanded={isOpen}
+        aria-haspopup="menu"
       >
         <MoreHorizontal size={16} />
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 top-full z-[999] mt-2 w-52 overflow-hidden rounded-xl border border-white/10 bg-[linear-gradient(to_bottom,rgba(12,21,37,0.98),rgba(8,15,28,0.98))] shadow-[0_20px_50px_rgba(0,0,0,0.45)]">
+        <div className="absolute right-0 top-full z-[999] mt-2 w-56 overflow-hidden rounded-xl border border-white/10 bg-[linear-gradient(to_bottom,rgba(12,21,37,0.98),rgba(8,15,28,0.98))] shadow-[0_20px_50px_rgba(0,0,0,0.45)]">
           {children}
         </div>
       )}
@@ -1090,21 +1276,7 @@ function TeamMenu({
   );
 }
 
-function SidebarNavItem({
-  href,
-  label,
-  icon: Icon,
-  pathname,
-  collapsed,
-  badge,
-}: {
-  href: string;
-  label: string;
-  icon: React.ComponentType<{ size?: number; className?: string }>;
-  pathname: string;
-  collapsed: boolean;
-  badge?: string;
-}) {
+function SidebarNavItem({ href, label, icon: Icon, pathname, collapsed, badge }: SidebarNavItemProps) {
   const isActive = pathname === href;
 
   return (
@@ -1123,11 +1295,11 @@ function SidebarNavItem({
         <>
           <span className="flex-1 text-sm font-medium">{label}</span>
           {badge && (
-            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold tracking-[0.12em] ${
-              isActive
-                ? "border-cyan-300/20 bg-cyan-300/10 text-cyan-100"
-                : "border-white/10 bg-white/[0.04] text-slate-300"
-            }`}>
+            <span
+              className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold tracking-[0.12em] ${
+                isActive ? "border-cyan-300/20 bg-cyan-300/10 text-cyan-100" : "border-white/10 bg-white/[0.04] text-slate-300"
+              }`}
+            >
               {badge}
             </span>
           )}
@@ -1139,24 +1311,14 @@ function SidebarNavItem({
   );
 }
 
-function MobileNavPill({
-  href,
-  label,
-  pathname,
-}: {
-  href: string;
-  label: string;
-  pathname: string;
-}) {
+function MobileNavPill({ href, label, pathname }: { href: string; label: string; pathname: string }) {
   const isActive = pathname === href;
 
   return (
     <Link
       href={href}
       className={`whitespace-nowrap rounded-full border px-4 py-2 text-sm transition ${
-        isActive
-          ? "border-cyan-300/20 bg-cyan-400/10 text-cyan-100"
-          : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
+        isActive ? "border-cyan-300/20 bg-cyan-400/10 text-cyan-100" : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
       }`}
     >
       {label}

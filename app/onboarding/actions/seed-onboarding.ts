@@ -47,6 +47,14 @@ function createUniqueSlug(value: string) {
   return `${base}-${suffix}`;
 }
 
+function getDisplayNameFromEmail(emailValue: string | null | undefined) {
+  const localPart = String(emailValue || "").split("@")[0] || "";
+  return localPart
+    .replace(/[._-]+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 function normalizeRole(role: string | null | undefined): FirmRole {
   if (role === "owner" || role === "admin" || role === "staff" || role === "client") {
     return role;
@@ -89,6 +97,54 @@ function throwSupabaseError(context: string, error: unknown): never {
   }
 
   throw new Error(`${context} failed`);
+}
+
+async function ensureFirmMembership({
+  supabase,
+  firmId,
+  userId,
+  role,
+}: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  firmId: string;
+  userId: string;
+  role: FirmRole;
+}) {
+  const { data: existingMembership, error: lookupError } = await supabase
+    .from("firm_members")
+    .select("id, role")
+    .eq("firm_id", firmId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (lookupError) {
+    throwSupabaseError("Existing firm membership lookup", lookupError);
+  }
+
+  if (existingMembership?.id) {
+    if (role === "owner" && existingMembership.role !== "owner") {
+      const { error: updateError } = await supabase
+        .from("firm_members")
+        .update({ role: "owner" })
+        .eq("id", existingMembership.id);
+
+      if (updateError) {
+        throwSupabaseError("Update owner membership", updateError);
+      }
+    }
+
+    return;
+  }
+
+  const { error: insertError } = await supabase.from("firm_members").insert({
+    firm_id: firmId,
+    user_id: userId,
+    role,
+  });
+
+  if (insertError) {
+    throwSupabaseError("Insert firm membership", insertError);
+  }
 }
 
 export async function seedWorkspaceFromOnboarding(
@@ -181,15 +237,12 @@ export async function seedWorkspaceFromOnboarding(
     }
 
     if (!existingMembership) {
-      const { error: membershipError } = await supabase.from("firm_members").insert({
-        firm_id: invite.firm_id,
-        user_id: user.id,
+      await ensureFirmMembership({
+        supabase,
+        firmId: invite.firm_id,
+        userId: user.id,
         role,
       });
-
-      if (membershipError) {
-        throwSupabaseError("Insert invited membership", membershipError);
-      }
     }
 
     const { error: inviteUpdateError } = await supabase
@@ -246,21 +299,27 @@ export async function seedWorkspaceFromOnboarding(
 
     firmId = firm.id;
 
-    const { error: memberError } = await supabase.from("firm_members").insert({
-      firm_id: firmId,
-      user_id: user.id,
+    await ensureFirmMembership({
+      supabase,
+      firmId,
+      userId: user.id,
       role: "owner",
     });
+  }
 
-    if (memberError) {
-      throwSupabaseError("Insert owner membership", memberError);
-    }
+  if (!pendingInviteToken && firmId) {
+    await ensureFirmMembership({
+      supabase,
+      firmId,
+      userId: user.id,
+      role: "owner",
+    });
   }
 
   const { error: profileError } = await supabase.from("profiles").upsert({
     user_id: user.id,
     email: user.email,
-    full_name: user.user_metadata?.full_name || user.user_metadata?.name || null,
+    full_name: user.user_metadata?.full_name || user.user_metadata?.name || getDisplayNameFromEmail(user.email) || null,
     role: toProfileRole(input.accountType),
     onboarding_completed: true,
     onboarding_completed_at: new Date().toISOString(),

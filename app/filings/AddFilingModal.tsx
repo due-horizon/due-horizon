@@ -37,11 +37,13 @@ type FilingTemplateKey =
   | "S Corp Return"
   | "BOI Filing"
   | "1099 Filing"
-  | "W-2 Filing";
+  | "W-2 Filing"
+  | "NYS-1";
 
 type NewFilingForm = {
   title: string;
   company: string;
+  companyId: string;
   state: string;
   dueDate: string;
   type: string;
@@ -78,6 +80,7 @@ type AddFilingModalProps = {
   updateForm: <K extends keyof NewFilingForm>(field: K, value: NewFilingForm[K]) => void;
   companyOptions: CompanyOption[];
   suggestedFilings: SuggestedFiling[];
+  hasCheckedSuggestions: boolean;
   selectedSuggestionKeys: string[];
   toggleSuggestedFiling: (suggestion: SuggestedFiling) => void;
   loadComplianceSuggestions: () => void | Promise<void>;
@@ -95,6 +98,14 @@ function fieldClass(hasError?: boolean) {
     hasError
       ? "border-red-400/40 bg-red-500/5 text-white placeholder:text-slate-500"
       : "border-white/10 bg-white/[0.04] text-white placeholder:text-slate-500 focus:border-cyan-300/40 focus:bg-white/[0.07]"
+  }`;
+}
+
+function selectFieldClass(hasError?: boolean) {
+  return `w-full appearance-none rounded-2xl border bg-[#020617] px-4 py-3 pr-10 text-sm text-white outline-none transition [color-scheme:dark] ${
+    hasError
+      ? "border-red-400/40 focus:border-red-300/40"
+      : "border-white/10 focus:border-cyan-300/40"
   }`;
 }
 
@@ -210,6 +221,16 @@ function SectionHeader({
   );
 }
 
+const EMPTY_FIELDS: Pick<NewFilingForm, "title" | "company" | "companyId" | "state" | "dueDate" | "type" | "templateKey"> = {
+  title: "",
+  company: "",
+  companyId: "",
+  state: "",
+  dueDate: "",
+  type: "",
+  templateKey: "",
+};
+
 export default function AddFilingModal({
   isOpen,
   onClose,
@@ -221,6 +242,7 @@ export default function AddFilingModal({
   updateForm,
   companyOptions,
   suggestedFilings,
+  hasCheckedSuggestions,
   selectedSuggestionKeys,
   toggleSuggestedFiling,
   loadComplianceSuggestions,
@@ -232,12 +254,14 @@ export default function AddFilingModal({
   const modalTitleRef = useRef<HTMLInputElement | null>(null);
   const companyButtonRef = useRef<HTMLButtonElement | null>(null);
   const companyPanelRef = useRef<HTMLDivElement | null>(null);
-  const lastRequestedCompanyRef = useRef<string | null>(null);
+  const companySearchInputRef = useRef<HTMLInputElement | null>(null);
   const autoLoadedCompanyRef = useRef<string | null>(null);
 
   const [creationMode, setCreationMode] = useState<CreationMode>("engine");
   const [companyQuery, setCompanyQuery] = useState("");
   const [isCompanyPickerOpen, setIsCompanyPickerOpen] = useState(false);
+  const [highlightedCompanyIndex, setHighlightedCompanyIndex] = useState(0);
+  const [isReviewDetailsOpen, setIsReviewDetailsOpen] = useState(false);
 
   const isFirmWorkspace = workspaceType === "accounting_firm";
   const entityLabel = isFirmWorkspace ? "client" : "business";
@@ -259,17 +283,11 @@ export default function AddFilingModal({
     const map = new Map<string, CompanyOption>();
 
     for (const company of visibleCompanyOptions) {
-      const key = normalizeCompanyKey(company.name);
-      if (!key) continue;
+      if (!company.id) continue;
 
-      const existing = map.get(key);
-      if (!existing) {
-        map.set(key, company);
-        continue;
-      }
-
-      if (getCompanyPriority(company) > getCompanyPriority(existing)) {
-        map.set(key, company);
+      const existing = map.get(company.id);
+      if (!existing || getCompanyPriority(company) > getCompanyPriority(existing)) {
+        map.set(company.id, company);
       }
     }
 
@@ -287,12 +305,17 @@ export default function AddFilingModal({
   const recentCompanies = useMemo(() => dedupedCompanies.slice(0, 5), [dedupedCompanies]);
 
   const selectedCompany = useMemo(() => {
+    if (newFiling.companyId) {
+      const byId = dedupedCompanies.find((company) => company.id === newFiling.companyId);
+      if (byId) return byId;
+    }
+
     const normalizedSelected = normalizeCompanyKey(newFiling.company);
     return (
       dedupedCompanies.find((company) => normalizeCompanyKey(company.name) === normalizedSelected) ||
       null
     );
-  }, [dedupedCompanies, newFiling.company]);
+  }, [dedupedCompanies, newFiling.company, newFiling.companyId]);
 
   const templateKeys = useMemo(() => {
     return filingTemplates ? (Object.keys(filingTemplates) as FilingTemplateKey[]) : [];
@@ -308,6 +331,11 @@ export default function AddFilingModal({
     newFiling.templateKey && filingTemplates?.[newFiling.templateKey]
       ? filingTemplates[newFiling.templateKey].tasks.length
       : 0;
+
+  const selectedTemplate =
+    newFiling.templateKey && filingTemplates?.[newFiling.templateKey]
+      ? filingTemplates[newFiling.templateKey]
+      : null;
 
   const previewTaskCount =
     creationMode === "engine"
@@ -357,15 +385,28 @@ export default function AddFilingModal({
   }, [isOpen]);
 
   useEffect(() => {
-    if (!isOpen) {
-      lastRequestedCompanyRef.current = null;
+    if (isOpen) {
+      setCreationMode("engine");
+      setCompanyQuery("");
+      setIsCompanyPickerOpen(false);
+      setHighlightedCompanyIndex(0);
+      setIsReviewDetailsOpen(false);
       autoLoadedCompanyRef.current = null;
       return;
     }
+
+    setCompanyQuery("");
+    setIsCompanyPickerOpen(false);
+    setHighlightedCompanyIndex(0);
+    setIsReviewDetailsOpen(false);
+    autoLoadedCompanyRef.current = null;
   }, [isOpen]);
 
   useEffect(() => {
     if (!isCompanyPickerOpen) return;
+
+    setCompanyQuery("");
+    setHighlightedCompanyIndex(0);
 
     function handlePointerDown(event: MouseEvent) {
       const target = event.target as Node;
@@ -383,13 +424,21 @@ export default function AddFilingModal({
   }, [isCompanyPickerOpen]);
 
   useEffect(() => {
+    if (!isCompanyPickerOpen) return;
+    window.setTimeout(() => companySearchInputRef.current?.focus(), 0);
+  }, [isCompanyPickerOpen]);
+
+  useEffect(() => {
+    setHighlightedCompanyIndex(0);
+  }, [companyQuery]);
+
+  useEffect(() => {
     if (!isOpen || creationMode !== "engine" || !selectedCompany || isLoadingSuggestions) return;
 
     const requestKey = `${selectedCompany.id}|${selectedCompany.name}`;
     if (autoLoadedCompanyRef.current === requestKey) return;
 
     autoLoadedCompanyRef.current = requestKey;
-    lastRequestedCompanyRef.current = selectedCompany.id;
 
     const timer = window.setTimeout(() => {
       void loadComplianceSuggestions();
@@ -405,47 +454,66 @@ export default function AddFilingModal({
     setNewFiling((current) => ({
       ...current,
       company: company.name,
+      companyId: company.id,
       state: company.state ? company.state.toUpperCase() : current.state,
     }));
 
     updateForm("company", company.name);
+    updateForm("companyId", company.id);
     if (company.state) {
       updateForm("state", company.state.toUpperCase());
     }
 
-    lastRequestedCompanyRef.current = null;
-    setCompanyQuery(company.name);
+    setCompanyQuery("");
     setIsCompanyPickerOpen(false);
 
     if (creationMode === "engine") {
       autoLoadedCompanyRef.current = requestKey;
-      lastRequestedCompanyRef.current = company.id;
       window.setTimeout(() => {
         void loadComplianceSuggestions();
       }, 120);
     }
   }
 
+  function handleClearFields() {
+    setCreationMode("engine");
+    setCompanyQuery("");
+    setIsCompanyPickerOpen(false);
+    setHighlightedCompanyIndex(0);
+    autoLoadedCompanyRef.current = null;
+    setNewFiling((current) => ({
+      ...current,
+      ...EMPTY_FIELDS,
+    }));
+  }
+
   if (!isOpen) return null;
 
   const canSubmit =
     creationMode === "engine"
-      ? selectedSuggestionKeys.length > 0 ||
-        (!!newFiling.title && !!newFiling.type && !!newFiling.dueDate)
-      : !!newFiling.company &&
+      ? (!!newFiling.companyId || !!newFiling.company) && selectedSuggestionKeys.length > 0
+      : (!!newFiling.companyId || !!newFiling.company) &&
         !!newFiling.title &&
         !!newFiling.type &&
         !!newFiling.state &&
         !!newFiling.dueDate;
 
   async function handleEngineRefresh() {
-    if (!newFiling.company || isLoadingSuggestions) return;
-    lastRequestedCompanyRef.current = selectedCompany?.id ?? newFiling.company;
+    if ((!newFiling.company && !newFiling.companyId) || isLoadingSuggestions) return;
     autoLoadedCompanyRef.current = selectedCompany
       ? `${selectedCompany.id}|${selectedCompany.name}`
       : newFiling.company;
     await loadComplianceSuggestions();
   }
+
+  const companyListboxId = "add-filing-company-listbox";
+  const showReviewFields = creationMode !== "engine" || isReviewDetailsOpen;
+  const reviewBadge = creationMode === "engine" ? "Auto-filled from engine" : creationMode === "template" ? "Template-backed" : "Manual entry";
+  const reviewDescription = creationMode === "engine"
+    ? "Engine-selected filings are ready. Open details only if you need to override the saved filing fields."
+    : creationMode === "template"
+      ? "Template details are auto-filled where possible. Confirm the due date and make any final edits."
+      : "Enter the filing details for this one-off record.";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617]/92 px-4 py-6 backdrop-blur-2xl">
@@ -524,7 +592,7 @@ export default function AddFilingModal({
             <button
               type="button"
               onClick={() => setCreationMode("engine")}
-              className={`rounded-[24px] border p-4 text-left transition ${badgeClass(creationMode === "engine")}`}
+              className={`rounded-[24px] border p-4 text-left transition duration-300 ${creationMode !== "engine" ? "opacity-75 hover:opacity-100" : "scale-[1.01]"} ${badgeClass(creationMode === "engine")}`}
             >
               <div className="flex items-start gap-3">
                 <div className="rounded-2xl border border-cyan-300/15 bg-cyan-400/10 p-2.5 text-cyan-200">
@@ -542,7 +610,7 @@ export default function AddFilingModal({
             <button
               type="button"
               onClick={() => setCreationMode("template")}
-              className={`rounded-[24px] border p-4 text-left transition ${badgeClass(creationMode === "template")}`}
+              className={`rounded-[24px] border p-4 text-left transition duration-300 ${creationMode !== "template" ? "opacity-75 hover:opacity-100" : "scale-[1.01]"} ${badgeClass(creationMode === "template")}`}
             >
               <div className="flex items-start gap-3">
                 <div className="rounded-2xl border border-violet-300/15 bg-violet-400/10 p-2.5 text-violet-200">
@@ -560,7 +628,7 @@ export default function AddFilingModal({
             <button
               type="button"
               onClick={() => setCreationMode("manual")}
-              className={`rounded-[24px] border p-4 text-left transition ${badgeClass(creationMode === "manual")}`}
+              className={`rounded-[24px] border p-4 text-left transition duration-300 ${creationMode !== "manual" ? "opacity-75 hover:opacity-100" : "scale-[1.01]"} ${badgeClass(creationMode === "manual")}`}
             >
               <div className="flex items-start gap-3">
                 <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-2.5 text-slate-200">
@@ -594,7 +662,13 @@ export default function AddFilingModal({
                     <button
                       ref={companyButtonRef}
                       type="button"
-                      onClick={() => setIsCompanyPickerOpen((prev) => !prev)}
+                      aria-haspopup="listbox"
+                      aria-expanded={isCompanyPickerOpen}
+                      aria-controls={companyListboxId}
+                      onClick={() => {
+                        setCompanyQuery("");
+                        setIsCompanyPickerOpen((prev) => !prev);
+                      }}
                       className={`${fieldClass(hasClientError)} flex items-center justify-between text-left`}
                     >
                       <span className="flex min-w-0 items-center gap-3">
@@ -617,15 +691,41 @@ export default function AddFilingModal({
                           <div className="relative">
                             <Search size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
                             <input
+                              ref={companySearchInputRef}
                               value={companyQuery}
                               onChange={(event) => setCompanyQuery(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (!filteredCompanies.length) return;
+
+                                if (event.key === "ArrowDown") {
+                                  event.preventDefault();
+                                  setHighlightedCompanyIndex((prev) =>
+                                    Math.min(prev + 1, filteredCompanies.length - 1)
+                                  );
+                                }
+
+                                if (event.key === "ArrowUp") {
+                                  event.preventDefault();
+                                  setHighlightedCompanyIndex((prev) => Math.max(prev - 1, 0));
+                                }
+
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  handleSelectCompany(filteredCompanies[highlightedCompanyIndex]);
+                                }
+                              }}
                               placeholder={`Search ${entityLabel}...`}
                               className={`${fieldClass(false)} pl-11`}
                             />
                           </div>
                         </div>
 
-                        <div className="dh-scroll max-h-80 overflow-y-auto p-2">
+                        <div
+                          id={companyListboxId}
+                          role="listbox"
+                          aria-label={`${entityLabelCap} options`}
+                          className="dh-scroll max-h-80 overflow-y-auto p-2"
+                        >
                           {!companyQuery.trim() && recentCompanies.length > 0 ? (
                             <div className="px-3 pb-2 pt-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
                               Recent
@@ -637,15 +737,18 @@ export default function AddFilingModal({
                               {`No matching ${entityLabelPlural} found.`}
                             </div>
                           ) : (
-                            filteredCompanies.map((company) => {
-                              const isSelected =
-                                normalizeCompanyKey(newFiling.company) ===
-                                normalizeCompanyKey(company.name);
+                            filteredCompanies.map((company, index) => {
+                              const isSelected = newFiling.companyId
+                                ? newFiling.companyId === company.id
+                                : normalizeCompanyKey(newFiling.company) ===
+                                  normalizeCompanyKey(company.name);
+                              const isHighlighted = index == highlightedCompanyIndex;
 
                               return (
                                 <div
                                   key={company.id}
-                                  role="button"
+                                  role="option"
+                                  aria-selected={isSelected}
                                   tabIndex={0}
                                   onClick={() => handleSelectCompany(company)}
                                   onKeyDown={(event) => {
@@ -657,7 +760,9 @@ export default function AddFilingModal({
                                   className={`mb-1 w-full cursor-pointer rounded-2xl border px-3 py-3 text-left transition ${
                                     isSelected
                                       ? "border-cyan-400/30 bg-cyan-400/10"
-                                      : "border-transparent hover:border-white/10 hover:bg-white/[0.06]"
+                                      : isHighlighted
+                                        ? "border-white/10 bg-white/[0.06]"
+                                        : "border-transparent hover:border-white/10 hover:bg-white/[0.06]"
                                   }`}
                                 >
                                   <div className="flex items-center justify-between gap-4">
@@ -745,7 +850,23 @@ export default function AddFilingModal({
                       <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-5 text-sm text-slate-500">
                         {`Choose a ${entityLabel} to instantly load recommended filings.`}
                       </div>
-                    ) : suggestedFilings.length === 0 ? (
+                    ) : isLoadingSuggestions && suggestedFilings.length === 0 ? (
+                      <div className="rounded-[24px] border border-cyan-400/15 bg-[linear-gradient(180deg,rgba(34,211,238,0.08),rgba(255,255,255,0.02))] p-5">
+                        <div className="flex items-start gap-3">
+                          <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/10 p-2.5 text-cyan-200">
+                            <Sparkles size={18} />
+                          </div>
+                          <div>
+                            <div className="text-sm font-semibold text-white">
+                              Checking recommendations...
+                            </div>
+                            <div className="mt-1 text-sm leading-6 text-slate-400">
+                              {`Reviewing this ${entityLabel}'s compliance profile and active filing rules.`}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : hasCheckedSuggestions && suggestedFilings.length === 0 ? (
                       <div className="rounded-[24px] border border-emerald-400/15 bg-[linear-gradient(180deg,rgba(16,185,129,0.08),rgba(255,255,255,0.02))] p-5">
                         <div className="flex items-start gap-3">
                           <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/10 p-2.5 text-emerald-200">
@@ -772,7 +893,7 @@ export default function AddFilingModal({
                             {suggestedFilings.length} recommendation{suggestedFilings.length === 1 ? "" : "s"} found
                           </div>
                           <div className="text-xs text-slate-500">
-                            Based on compliance profile + active rules
+                            {isLoadingSuggestions ? "Refreshing recommendations..." : "Based on compliance profile + active rules"}
                           </div>
                         </div>
 
@@ -785,7 +906,7 @@ export default function AddFilingModal({
                               key={selectionKey}
                               type="button"
                               onClick={() => toggleSuggestedFiling(suggestion)}
-                              className={`w-full rounded-[24px] border p-4 text-left transition duration-300 hover:scale-[1.01] ${
+                              className={`w-full rounded-[24px] border p-4 text-left transition duration-300 hover:scale-[1.01] active:scale-[0.995] ${
                                 selected
                                   ? "border-cyan-400/35 bg-[linear-gradient(180deg,rgba(34,211,238,0.12),rgba(34,211,238,0.04))] shadow-[0_0_0_1px_rgba(34,211,238,0.12),0_0_26px_rgba(34,211,238,0.08)]"
                                   : "border-white/10 bg-white/[0.025] hover:bg-white/[0.05]"
@@ -833,100 +954,205 @@ export default function AddFilingModal({
                 ) : null}
 
                 {creationMode === "template" ? (
-                  <div className="mt-5">
-                    <label className="mb-2 block text-sm font-medium text-slate-300">
-                      Template
-                    </label>
-                    <select
-                      className={fieldClass(!!(submitAttempted && errors.templateKey))}
-                      value={newFiling.templateKey}
-                      onChange={(event) => {
-                        const nextTemplate = event.target.value as NewFilingForm["templateKey"];
-                        updateForm("templateKey", nextTemplate);
-                      }}
-                    >
-                      <option value="">Select template</option>
-                      {templateKeys.map((templateKey) => (
-                        <option key={templateKey} value={templateKey}>
-                          {templateKey}
-                        </option>
-                      ))}
-                    </select>
-                    {submitAttempted && errors.templateKey ? (
-                      <p className="mt-2 text-xs text-red-300">{errors.templateKey}</p>
-                    ) : null}
+                  <div className="mt-5 space-y-4 animate-[fadeIn_0.35s_ease]">
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-slate-300">
+                        Template
+                      </label>
+                      <div className="relative">
+                        <select
+                          className={selectFieldClass(!!(submitAttempted && errors.templateKey))}
+                          style={{ colorScheme: "dark" }}
+                          value={newFiling.templateKey}
+                          onChange={(event) => {
+                            const nextTemplate = event.target.value as NewFilingForm["templateKey"];
+                            updateForm("templateKey", nextTemplate);
+                          }}
+                        >
+                          <option value="" className="bg-[#020617] text-white">
+                            Select template
+                          </option>
+                          {templateKeys.map((templateKey) => (
+                            <option key={templateKey} value={templateKey} className="bg-[#020617] text-white">
+                              {templateKey}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown
+                          size={16}
+                          className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400"
+                        />
+                      </div>
+                      {submitAttempted && errors.templateKey ? (
+                        <p className="mt-2 text-xs text-red-300">{errors.templateKey}</p>
+                      ) : null}
+                    </div>
+
+                    {selectedTemplate ? (
+                      <div className="rounded-[24px] border border-violet-400/20 bg-[linear-gradient(180deg,rgba(168,85,247,0.10),rgba(255,255,255,0.02))] p-4 shadow-[0_0_28px_rgba(168,85,247,0.08)]">
+                        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                          <div>
+                            <div className="inline-flex items-center gap-2 rounded-full border border-violet-300/20 bg-violet-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-violet-100">
+                              <Layers3 size={13} />
+                              Template selected
+                            </div>
+                            <div className="mt-3 text-base font-semibold text-white">{selectedTemplate.titleSuggestion}</div>
+                            <div className="mt-1 text-sm text-slate-400">
+                              {selectedTemplate.type} • {selectedTemplate.tasks.length} starter task{selectedTemplate.tasks.length === 1 ? "" : "s"}
+                            </div>
+                          </div>
+                          <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-slate-300">
+                            Auto-fills filing name and type
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                          {selectedTemplate.tasks.slice(0, 4).map((task, index) => (
+                            <div key={`${task}-${index}`} className="rounded-2xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-slate-300">
+                              <span className="mr-2 text-violet-200">{index + 1}.</span>{task}
+                            </div>
+                          ))}
+                        </div>
+
+                        {selectedTemplate.tasks.length > 4 ? (
+                          <div className="mt-3 text-xs text-slate-500">
+                            +{selectedTemplate.tasks.length - 4} more task{selectedTemplate.tasks.length - 4 === 1 ? "" : "s"} included in the workflow.
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-5 text-sm text-slate-500">
+                        Choose a template to preview the workflow before creating the filing.
+                      </div>
+                    )}
                   </div>
                 ) : null}
               </div>
 
               <div className="rounded-[26px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.015))] p-5">
-                <SectionHeader
-                  eyebrow="Step 3"
-                  title="Filing details"
-                  description="Confirm the filing information below before creating it."
-                />
-
-                <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                   <div>
-                    <label className="mb-2 block text-sm font-medium text-slate-300">
-                      Filing name
-                    </label>
-                    <input
-                      ref={modalTitleRef}
-                      placeholder="Sales Tax Filing"
-                      className={fieldClass(!!(submitAttempted && errors.title))}
-                      value={newFiling.title}
-                      onChange={(event) => updateForm("title", event.target.value)}
-                    />
-                    {submitAttempted && errors.title ? (
-                      <p className="mt-2 text-xs text-red-300">{errors.title}</p>
-                    ) : null}
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-cyan-300/80">
+                      Final Step
+                    </div>
+                    <div className="mt-2 text-lg font-semibold text-white">Review & adjust</div>
+                    <div className="mt-1 text-sm leading-6 text-slate-400">{reviewDescription}</div>
                   </div>
 
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-slate-300">
-                      Filing type
-                    </label>
-                    <input
-                      placeholder="Type"
-                      className={fieldClass(!!(submitAttempted && errors.type))}
-                      value={newFiling.type}
-                      onChange={(event) => updateForm("type", event.target.value)}
-                    />
-                    {submitAttempted && errors.type ? (
-                      <p className="mt-2 text-xs text-red-300">{errors.type}</p>
-                    ) : null}
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-slate-300">State</label>
-                    <input
-                      placeholder="NY"
-                      maxLength={2}
-                      className={fieldClass(!!(submitAttempted && errors.state))}
-                      value={newFiling.state}
-                      onChange={(event) => updateForm("state", event.target.value.toUpperCase())}
-                    />
-                    {submitAttempted && errors.state ? (
-                      <p className="mt-2 text-xs text-red-300">{errors.state}</p>
-                    ) : null}
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-slate-300">
-                      Due date
-                    </label>
-                    <input
-                      type="date"
-                      className={fieldClass(!!(submitAttempted && errors.dueDate))}
-                      value={newFiling.dueDate}
-                      onChange={(event) => updateForm("dueDate", event.target.value)}
-                    />
-                    {submitAttempted && errors.dueDate ? (
-                      <p className="mt-2 text-xs text-red-300">{errors.dueDate}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-emerald-400/20 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-200">
+                      {reviewBadge}
+                    </span>
+                    {creationMode === "engine" ? (
+                      <button
+                        type="button"
+                        onClick={() => setIsReviewDetailsOpen((current) => !current)}
+                        className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-slate-300 transition hover:bg-white/[0.08] hover:text-white"
+                      >
+                        {isReviewDetailsOpen ? "Hide details" : "Edit details"}
+                      </button>
                     ) : null}
                   </div>
                 </div>
+
+                <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500">Filing name</div>
+                    <div className="mt-2 text-sm font-medium text-white">
+                      {creationMode === "engine" && selectedSuggestions.length > 1
+                        ? `${selectedSuggestions.length} selected filings`
+                        : newFiling.title || selectedSuggestions[0]?.filingName || "—"}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500">Due date</div>
+                    <div className="mt-2 text-sm font-medium text-white">
+                      {creationMode === "engine" && selectedSuggestions[0]
+                        ? formatFriendlyDate(selectedSuggestions[0].dueDate)
+                        : formatFriendlyDate(newFiling.dueDate)}
+                    </div>
+                  </div>
+                </div>
+
+                {showReviewFields ? (
+                  <div className="mt-5 rounded-[24px] border border-cyan-400/10 bg-black/20 p-4 animate-[fadeIn_0.25s_ease]">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-white">Editable filing fields</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          These are the exact values saved to the filing record.
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-slate-300">
+                          Filing name
+                        </label>
+                        <input
+                          ref={modalTitleRef}
+                          placeholder="Sales Tax Filing"
+                          className={fieldClass(!!(submitAttempted && errors.title))}
+                          value={newFiling.title}
+                          onChange={(event) => updateForm("title", event.target.value)}
+                        />
+                        {submitAttempted && errors.title ? (
+                          <p className="mt-2 text-xs text-red-300">{errors.title}</p>
+                        ) : null}
+                      </div>
+
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-slate-300">
+                          Filing type
+                        </label>
+                        <input
+                          placeholder="Type"
+                          className={fieldClass(!!(submitAttempted && errors.type))}
+                          value={newFiling.type}
+                          onChange={(event) => updateForm("type", event.target.value)}
+                        />
+                        {submitAttempted && errors.type ? (
+                          <p className="mt-2 text-xs text-red-300">{errors.type}</p>
+                        ) : null}
+                      </div>
+
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-slate-300">State</label>
+                        <input
+                          placeholder="NY"
+                          maxLength={2}
+                          className={fieldClass(!!(submitAttempted && errors.state))}
+                          value={newFiling.state}
+                          onChange={(event) => updateForm("state", event.target.value.toUpperCase())}
+                        />
+                        {submitAttempted && errors.state ? (
+                          <p className="mt-2 text-xs text-red-300">{errors.state}</p>
+                        ) : null}
+                      </div>
+
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-slate-300">
+                          Due date
+                        </label>
+                        <input
+                          type="date"
+                          className={fieldClass(!!(submitAttempted && errors.dueDate))}
+                          value={newFiling.dueDate}
+                          onChange={(event) => updateForm("dueDate", event.target.value)}
+                        />
+                        {submitAttempted && errors.dueDate ? (
+                          <p className="mt-2 text-xs text-red-300">{errors.dueDate}</p>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-5 rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-4 text-sm text-slate-500">
+                    Engine filings will use the selected recommendation details. Use “Edit details” only for an override.
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1079,15 +1305,7 @@ export default function AddFilingModal({
             <div className="flex flex-wrap justify-end gap-3">
               <button
                 type="button"
-                onClick={() => {
-                  setNewFiling((current) => ({
-                    ...current,
-                    title: "",
-                    type: "",
-                    dueDate: "",
-                    templateKey: "",
-                  }));
-                }}
+                onClick={handleClearFields}
                 className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/[0.08]"
               >
                 Clear fields

@@ -55,6 +55,54 @@ function getWorkspacePlaceholder(type: AccountType) {
   return "Enter workspace name";
 }
 
+function getDisplayNameFromEmail(emailValue: string) {
+  const localPart = emailValue.split("@")[0] || "";
+  return localPart
+    .replace(/[._-]+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+async function ensureOwnerMembership({
+  supabase,
+  firmId,
+  userId,
+}: {
+  supabase: ReturnType<typeof createClient>;
+  firmId: string;
+  userId: string;
+}) {
+  const { data: existingMembership, error: lookupError } = await supabase
+    .from("firm_members")
+    .select("id, role")
+    .eq("firm_id", firmId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (lookupError) throw lookupError;
+
+  if (existingMembership?.id) {
+    if (existingMembership.role !== "owner") {
+      const { error: updateError } = await supabase
+        .from("firm_members")
+        .update({ role: "owner" })
+        .eq("id", existingMembership.id);
+
+      if (updateError) throw updateError;
+    }
+
+    return;
+  }
+
+  const { error: insertError } = await supabase.from("firm_members").insert({
+    user_id: userId,
+    firm_id: firmId,
+    role: "owner",
+  });
+
+  if (insertError) throw insertError;
+}
+
 export default function SignupPage() {
   const supabase = createClient();
   const router = useRouter();
@@ -235,14 +283,35 @@ export default function SignupPage() {
 
       const firmId = firm.id;
 
-      const { error: membershipError } = await supabase.from("firm_members").insert({
+      try {
+        await ensureOwnerMembership({
+          supabase,
+          firmId,
+          userId: user.id,
+        });
+      } catch (membershipError) {
+        setError(
+          membershipError instanceof Error
+            ? membershipError.message
+            : "Failed to attach user to workspace."
+        );
+        setLoading(false);
+        return;
+      }
+
+      const { error: profileError } = await supabase.from("profiles").upsert({
         user_id: user.id,
-        firm_id: firmId,
-        role: "owner",
+        email: user.email || emailToUse,
+        full_name:
+          user.user_metadata?.full_name ||
+          user.user_metadata?.name ||
+          getDisplayNameFromEmail(emailToUse) ||
+          null,
+        role: accountType === "firm" ? "accounting_firm" : "business_owner",
       });
 
-      if (membershipError) {
-        setError(membershipError.message || "Failed to attach user to workspace.");
+      if (profileError) {
+        setError(profileError.message || "Failed to prepare your team profile.");
         setLoading(false);
         return;
       }
@@ -264,28 +333,17 @@ export default function SignupPage() {
         return;
       }
 
-      const checkoutResponse = await fetch("/api/stripe/checkout", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          firmId,
-          email: emailToUse,
-          accountType,
-          plan: selectedPlan,
-        }),
-      });
+      setLoading(false);
 
-      const checkoutData = await checkoutResponse.json();
+      const params = new URLSearchParams();
+      params.set("plan", selectedPlan);
+      params.set("type", accountType);
+      if (workspaceNameToUse) params.set("workspace", workspaceNameToUse);
+      if (inviteToken) params.set("invite", inviteToken);
 
-      if (!checkoutResponse.ok || !checkoutData.url) {
-        setError(checkoutData.error || "Failed to start Stripe checkout.");
-        setLoading(false);
-        return;
-      }
-
-      window.location.href = checkoutData.url;
+      router.replace(`/onboarding?${params.toString()}`);
+      router.refresh();
+      return;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong creating your account.");
       setLoading(false);
@@ -345,13 +403,13 @@ export default function SignupPage() {
             </h1>
 
             <p className="max-w-lg text-lg leading-8 text-slate-400">
-              Start your account, keep your selected plan attached, and move cleanly into checkout and onboarding.
+              Start your account, keep your selected plan attached, and move cleanly into onboarding before checkout.
             </p>
           </div>
 
           <div className="grid max-w-xl gap-3">
             <FeaturePill text="Preserves selected plan through signup" />
-            <FeaturePill text="Starts checkout right after account creation" />
+            <FeaturePill text="Moves cleanly into onboarding after account creation" />
             <FeaturePill
               text={
                 accountType === "business"
@@ -375,7 +433,7 @@ export default function SignupPage() {
               <p className="mt-2 text-sm leading-6 text-slate-400">
                 {inviteToken
                   ? "Create your account to join the invited workspace."
-                  : "Start your setup and carry your plan, type, and workspace context into checkout and onboarding."}
+                  : "Start your setup and carry your plan, type, and workspace context into onboarding."}
               </p>
             </div>
 

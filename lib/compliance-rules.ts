@@ -28,11 +28,19 @@ export type ComplianceProfile = {
 };
 
 export type DueRuleType = "fixed_day" | "nth_day_after_period" | "annual_fixed_date";
+export type RuleEngineType = "scheduled" | "event";
 
 export type DueRuleConfig = {
   month?: number;
   day?: number;
   days_after_period_end?: number;
+};
+
+export type EventTriggerConfig = {
+  threshold_amount?: number;
+  filer_type_field?: string;
+  default_business_day_offset?: number;
+  grouping?: "same_week";
 };
 
 export type ComplianceRule = {
@@ -52,10 +60,13 @@ export type ComplianceRule = {
     | "tax_1040"
     | "tax_1120"
     | "tax_1120s"
-    | "tax_1065";
-  frequency: FilingFrequency;
-  due_rule_type: DueRuleType;
-  due_rule_config: DueRuleConfig;
+    | "tax_1065"
+    | "withholding_threshold";
+  engine_type?: RuleEngineType;
+  frequency?: FilingFrequency;
+  due_rule_type?: DueRuleType;
+  due_rule_config?: DueRuleConfig;
+  event_trigger_config?: EventTriggerConfig;
   active?: boolean;
   priority?: number;
   category?: "tax" | "payroll" | "compliance";
@@ -75,9 +86,11 @@ type RuleSeedArgs = {
   jurisdictionLevel: ComplianceRule["jurisdiction_level"];
   jurisdictionCode: string;
   triggerType: ComplianceRule["trigger_type"];
-  frequency: FilingFrequency;
-  dueRuleType: DueRuleType;
-  dueRuleConfig: DueRuleConfig;
+  engineType?: RuleEngineType;
+  frequency?: FilingFrequency;
+  dueRuleType?: DueRuleType;
+  dueRuleConfig?: DueRuleConfig;
+  eventTriggerConfig?: EventTriggerConfig;
   entityType?: string | null;
   priority?: number;
   category?: ComplianceRule["category"];
@@ -92,9 +105,11 @@ function makeRule(args: RuleSeedArgs): ComplianceRule {
     jurisdiction_code: args.jurisdictionCode,
     entity_type: args.entityType ?? null,
     trigger_type: args.triggerType,
+    engine_type: args.engineType ?? "scheduled",
     frequency: args.frequency,
     due_rule_type: args.dueRuleType,
     due_rule_config: args.dueRuleConfig,
+    event_trigger_config: args.eventTriggerConfig,
     active: true,
     priority: args.priority ?? 100,
     category: args.category ?? "compliance",
@@ -233,6 +248,25 @@ export const complianceRules: ComplianceRule[] = [
     category: "tax",
   }),
   makeRule({
+    id: "ny-nys-1",
+    filingKey: "nys_1",
+    filingName: "NYS-1",
+    jurisdictionLevel: "state",
+    jurisdictionCode: "NY",
+    triggerType: "withholding_threshold",
+    engineType: "event",
+    frequency: "one_time",
+    dueRuleType: "nth_day_after_period",
+    dueRuleConfig: { days_after_period_end: 5 },
+    eventTriggerConfig: {
+      threshold_amount: 700,
+      default_business_day_offset: 5,
+      grouping: "same_week",
+    },
+    priority: 12,
+    category: "payroll",
+  }),
+  makeRule({
     id: "ny-annual-report",
     filingKey: "ny_annual_report",
     filingName: "NY Annual Report",
@@ -277,6 +311,12 @@ export const workflowTemplates: WorkflowTemplate[] = [
     filing_key: "payroll_returns",
     template_name: "Payroll Workflow",
     tasks: ["Collect payroll data", "Prepare payroll return", "Review payroll return", "File payroll return"],
+  },
+  {
+    id: "tpl-nys-1",
+    filing_key: "nys_1",
+    template_name: "NYS-1 Workflow",
+    tasks: ["Review NY withholding trigger", "Prepare NYS-1", "Submit NYS-1 payment", "Save confirmation"],
   },
   {
     id: "tpl-sales-tax",

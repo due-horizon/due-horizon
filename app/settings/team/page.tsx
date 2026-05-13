@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { ArrowRight, Settings2, ShieldCheck, UserPlus, Users } from "lucide-react";
 import { Panel, SaveBar, SettingsShell, ToggleRow } from "../_shared";
 
 type TeamSettings = {
@@ -48,6 +50,8 @@ export default function TeamSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [canEdit, setCanEdit] = useState(false);
   const [message, setMessage] = useState("");
+  const [memberCount, setMemberCount] = useState(0);
+  const [pendingInviteCount, setPendingInviteCount] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,9 +66,7 @@ export default function TeamSettingsPage() {
           error: userError,
         } = await supabase.auth.getUser();
 
-        if (userError) {
-          throw userError;
-        }
+        if (userError) throw userError;
 
         if (!user) {
           if (!cancelled) {
@@ -81,9 +83,7 @@ export default function TeamSettingsPage() {
           .limit(1)
           .single();
 
-        if (membershipError) {
-          throw membershipError;
-        }
+        if (membershipError) throw membershipError;
 
         if (!membership) {
           if (!cancelled) {
@@ -96,31 +96,44 @@ export default function TeamSettingsPage() {
         setFirmId(membership.firm_id);
         setCanEdit(membership.role === "owner" || membership.role === "admin");
 
-        const { data: firm, error: firmError } = await supabase
-          .from("firms")
-          .select("settings")
-          .eq("id", membership.firm_id)
-          .single<FirmSettingsRow>();
+        const [firmResult, memberCountResult, inviteCountResult] = await Promise.all([
+          supabase.from("firms").select("settings").eq("id", membership.firm_id).single<FirmSettingsRow>(),
+          supabase
+            .from("firm_members")
+            .select("id", { count: "exact", head: true })
+            .eq("firm_id", membership.firm_id),
+          supabase
+            .from("team_invites")
+            .select("id", { count: "exact", head: true })
+            .eq("firm_id", membership.firm_id)
+            .in("status", ["pending", "sent"]),
+        ]);
 
-        if (firmError) {
-          throw firmError;
+        if (firmResult.error) throw firmResult.error;
+
+        const inviteCountError = inviteCountResult.error;
+        if (inviteCountError && inviteCountError.code !== "PGRST205" && inviteCountError.code !== "42P01") {
+          throw inviteCountError;
         }
 
-        if (!cancelled && firm?.settings) {
-          setSettings({
-            allowInvites: firm.settings.allowInvites ?? true,
-            requireRoleApproval: firm.settings.requireRoleApproval ?? true,
-            allowStaffFilings: firm.settings.allowStaffFilings ?? true,
-          });
+        if (!cancelled) {
+          if (firmResult.data?.settings) {
+            setSettings({
+              allowInvites: firmResult.data.settings.allowInvites ?? true,
+              requireRoleApproval: firmResult.data.settings.requireRoleApproval ?? true,
+              allowStaffFilings: firmResult.data.settings.allowStaffFilings ?? true,
+            });
+          }
+
+          setMemberCount(memberCountResult.count ?? 0);
+          setPendingInviteCount(inviteCountResult.count ?? 0);
         }
       } catch (error) {
         if (!cancelled) {
           setMessage(getErrorMessage(error, "Failed to load team settings."));
         }
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     }
 
@@ -138,17 +151,8 @@ export default function TeamSettingsPage() {
     setMessage("");
 
     try {
-      const { error } = await supabase
-        .from("firms")
-        .update({
-          settings,
-        })
-        .eq("id", firmId);
-
-      if (error) {
-        throw error;
-      }
-
+      const { error } = await supabase.from("firms").update({ settings }).eq("id", firmId);
+      if (error) throw error;
       setMessage("Access controls saved.");
     } catch (error) {
       setMessage(getErrorMessage(error, "Failed to save settings."));
@@ -164,6 +168,59 @@ export default function TeamSettingsPage() {
     >
       <div className="space-y-6">
         <Panel
+          title="Team management"
+          description="Open the dedicated team workspace to invite people, review roles, and manage access."
+        >
+          <div className="grid gap-4 lg:grid-cols-[1.35fr_0.65fr]">
+            <div className="rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(34,211,238,0.08),rgba(255,255,255,0.02))] p-5">
+              <div className="flex items-start gap-3">
+                <div className="rounded-2xl border border-cyan-300/20 bg-cyan-400/10 p-3 text-cyan-100">
+                  <Users size={18} />
+                </div>
+                <div>
+                  <div className="text-base font-semibold text-white">Dedicated team workspace</div>
+                  <div className="mt-2 text-sm leading-7 text-slate-300">
+                    Use the members page for invites, role badges, membership review, and future ownership actions.
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Link
+                  href="/settings/team/members"
+                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.18)] transition hover:from-cyan-300 hover:to-blue-400"
+                >
+                  Manage team
+                  <ArrowRight size={16} />
+                </Link>
+
+                <Link
+                  href="/settings/team/members?invite=true"
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/[0.08]"
+                >
+                  <UserPlus size={16} />
+                  Invite teammate
+                </Link>
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Members</div>
+                <div className="mt-3 text-3xl font-semibold text-white">{loading ? "—" : memberCount}</div>
+                <div className="mt-2 text-sm text-slate-400">Users with workspace access</div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Pending invites</div>
+                <div className="mt-3 text-3xl font-semibold text-white">{loading ? "—" : pendingInviteCount}</div>
+                <div className="mt-2 text-sm text-slate-400">Outstanding invite records</div>
+              </div>
+            </div>
+          </div>
+        </Panel>
+
+        <Panel
           title="Team access controls"
           description="As your workspace grows, permissions and role clarity become critical."
         >
@@ -173,15 +230,17 @@ export default function TeamSettingsPage() {
             </div>
           ) : (
             <>
+              <div className="mb-4 rounded-2xl border border-cyan-400/15 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-50">
+                Invite people and manage member roles from the members page. These toggles control the overall workspace behavior.
+              </div>
+
               <div className="space-y-3">
                 <ToggleRow
                   title="Allow team invites"
-                  description="Workspace owners can invite new teammates."
+                  description="Workspace owners and approved admins can invite new teammates."
                   enabled={settings.allowInvites}
                   disabled={!canEdit}
-                  onChange={(val) =>
-                    setSettings((prev) => ({ ...prev, allowInvites: val }))
-                  }
+                  onChange={(val) => setSettings((prev) => ({ ...prev, allowInvites: val }))}
                 />
 
                 <ToggleRow
@@ -237,9 +296,14 @@ export default function TeamSettingsPage() {
           title="How this works"
           description="These settings control workspace-level access behavior and are stored on the firm record."
         >
-          <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4 text-sm leading-7 text-slate-300">
-            Owners and admins can update team access controls. Staff and clients can view the current settings,
-            but they cannot change them.
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4 text-sm leading-7 text-slate-300">
+              Owners and admins can update workspace-level team access controls. Staff and clients can view the current settings,
+              but they cannot change them.
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4 text-sm leading-7 text-slate-300">
+              Only the members page should handle invite actions, role review, and future ownership transfer flows so the settings page stays clean.
+            </div>
           </div>
         </Panel>
       </div>

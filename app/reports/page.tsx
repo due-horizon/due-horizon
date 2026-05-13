@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { hasFeatureAccess } from "@/lib/billing/plan-access";
 import {
   AlertTriangle,
   BarChart3,
@@ -30,8 +31,9 @@ type DbFiling = {
 
 type WorkspaceSummary = {
   workspaceName: string;
-  workspaceType: "business_owner" | "accounting_firm" | "unknown";
+  workspaceType: "business_owner" | "accounting_firm" | "business" | "firm" | "unknown";
   clientCount: number;
+  plan: string;
 };
 
 type ExportOption = "register" | "overdue" | "summary";
@@ -72,6 +74,24 @@ function formatStatus(status: FilingStatus, dueDate: string) {
   return "Upcoming";
 }
 
+function formatPlan(plan: string) {
+  const normalized = plan.toLowerCase();
+  const map: Record<string, string> = {
+    starter: "Starter",
+    growth: "Growth",
+    scale: "Scale",
+    core: "Core",
+    operations: "Operations",
+    enterprise: "Enterprise",
+  };
+  return map[normalized] || plan;
+}
+
+function normalizeWorkspaceType(value: string) {
+  if (value === "business_owner" || value === "business") return "business";
+  return "firm";
+}
+
 function downloadCsv(filename: string, rows: string[][]) {
   const escapeCell = (value: string) => `"${String(value).replace(/"/g, '""')}"`;
   const csv = rows.map((row) => row.map((cell) => escapeCell(cell)).join(",")).join("\n");
@@ -105,6 +125,7 @@ export default function ReportsPage() {
     workspaceName: "Due Horizon",
     workspaceType: "unknown",
     clientCount: 0,
+    plan: "",
   });
   const [filings, setFilings] = useState<DbFiling[]>([]);
   const [loading, setLoading] = useState(true);
@@ -134,7 +155,7 @@ export default function ReportsPage() {
       }
 
       const [{ data: workspace }, { data: clients }, { data: organizations }, { data: filingsData }] = await Promise.all([
-        supabase.from("workspaces").select("name, workspace_type").eq("id", workspaceId).single(),
+        supabase.from("workspaces").select("name, workspace_type, plan").eq("id", workspaceId).single(),
         supabase.from("clients").select("id").eq("workspace_id", workspaceId),
         supabase.from("organizations").select("id").eq("workspace_id", workspaceId),
         supabase
@@ -149,12 +170,13 @@ export default function ReportsPage() {
         workspaceType: workspace?.workspace_type || "unknown",
         clientCount:
           workspace?.workspace_type === "accounting_firm" ? (clients || []).length : (organizations || []).length,
+        plan: workspace?.plan || "",
       });
       setFilings((filingsData || []) as DbFiling[]);
       setLoading(false);
     }
 
-    loadReports();
+    void loadReports();
   }, [supabase]);
 
   useEffect(() => {
@@ -177,6 +199,12 @@ export default function ReportsPage() {
     };
   }, []);
 
+  const canSeeAdvancedReports = hasFeatureAccess({
+    workspaceType: normalizeWorkspaceType(summary.workspaceType),
+    plan: summary.plan,
+    feature: "advanced_reports",
+  });
+
   const metrics = useMemo(() => {
     const overdue = filings.filter((filing) => filing.status !== "filed" && daysUntil(filing.due_date) < 0).length;
     const dueSoon = filings.filter((filing) => {
@@ -193,7 +221,6 @@ export default function ReportsPage() {
 
   const previousMetrics = useMemo(() => {
     const now = new Date();
-    const dayMs = 1000 * 60 * 60 * 24;
     const currentStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
     const previousStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 59);
     const previousEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
@@ -330,6 +357,8 @@ export default function ReportsPage() {
   })();
 
   function handleExport(option: ExportOption) {
+    if (!canSeeAdvancedReports) return;
+
     setExportMenuOpen(false);
 
     if (option === "register") {
@@ -382,11 +411,6 @@ export default function ReportsPage() {
       ["Due Soon", String(metrics.dueSoon)],
       ["Overdue", String(metrics.overdue)],
       ["Completion Rate", `${metrics.completionRate}%`],
-      ["Current Window", previousMetrics.currentWindowLabel],
-      ["Previous Window", previousMetrics.previousWindowLabel],
-      ["Volume Delta", String(previousMetrics.totalDelta)],
-      ["Overdue Delta", String(previousMetrics.overdueDelta)],
-      ["Completion Delta", `${previousMetrics.completionDelta}%`],
       ["", ""],
       ["Filing Mix by Frequency", ""],
       ...byFrequency.map(([label, count]) => [label, String(count)]),
@@ -399,6 +423,8 @@ export default function ReportsPage() {
     ];
     downloadCsv("due-horizon-workload-summary.csv", summaryRows);
   }
+
+  const isFirmWorkspace = summary.workspaceType === "accounting_firm" || summary.workspaceType === "firm";
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.08),transparent_28%),linear-gradient(to_bottom,#07111f,#020617)] text-white">
@@ -439,214 +465,263 @@ export default function ReportsPage() {
                   </div>
                 </div>
 
-                <div className="relative" ref={exportMenuRef}>
-                  <button
-                    type="button"
-                    onClick={() => setExportMenuOpen((prev) => !prev)}
-                    className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
-                  >
-                    <Download size={15} />
-                    Export Report
-                    <ChevronDown size={15} />
-                  </button>
-
-                  {exportMenuOpen && (
-                    <div className="absolute right-0 z-20 mt-2 w-72 rounded-2xl border border-white/10 bg-[linear-gradient(to_bottom,rgba(12,21,37,0.98),rgba(8,15,28,0.98))] p-2 shadow-[0_24px_70px_rgba(0,0,0,0.35)]">
-                      <ExportOptionButton
-                        title="Filing Register"
-                        subtitle="Full filing-level export"
-                        onClick={() => handleExport("register")}
-                      />
-                      <ExportOptionButton
-                        title="Overdue & Risk Report"
-                        subtitle="Overdue plus next 7 days"
-                        onClick={() => handleExport("overdue")}
-                      />
-                      <ExportOptionButton
-                        title="Workload Summary"
-                        subtitle="Metrics, mix, and monthly volume"
-                        onClick={() => handleExport("summary")}
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <InsightBanner
-                title={headlineInsight.title}
-                body={headlineInsight.body}
-                tone={headlineInsight.tone}
-              />
-
-              <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <HeroStatCard
-                  label="Completion Rate"
-                  value={`${metrics.completionRate}%`}
-                  helper={completionNarrative}
-                  icon={<CheckCircle2 size={18} />}
-                />
-                <HeroStatCard
-                  label="Active Workload"
-                  value={String(metrics.active)}
-                  helper="Filings that still require action"
-                  icon={<FileBarChart2 size={18} />}
-                />
-                <HeroStatCard
-                  label="Peak Month"
-                  value={highestMonth ? highestMonth.label : "—"}
-                  helper={highestMonth ? `${highestMonth.value} filings due` : "No data yet"}
-                  icon={<TrendingUp size={18} />}
-                />
-                <HeroStatCard
-                  label="Workspace"
-                  value={summary.workspaceName}
-                  helper={
-                    summary.workspaceType === "accounting_firm"
-                      ? `${summary.clientCount} tracked clients`
-                      : `${summary.clientCount} tracked organizations`
-                  }
-                  icon={<PieChart size={18} />}
-                />
-              </div>
-
-              <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-                <MetricCard label="Total filings" value={String(metrics.total)} accent="cyan" />
-                <MetricCard label="Filed" value={String(metrics.filed)} accent="green" />
-                <MetricCard label="Ready" value={String(metrics.ready)} accent="blue" />
-                <MetricCard label="Due soon" value={String(metrics.dueSoon)} accent="yellow" />
-                <MetricCard label="Overdue" value={String(metrics.overdue)} accent="red" />
-              </div>
-
-              <div className="mt-6 grid gap-6 xl:grid-cols-3">
-                <TrendCard
-                  label="Volume vs Prior 30 Days"
-                  current={`${previousMetrics.currentTotal}`}
-                  delta={previousMetrics.totalDelta}
-                  positiveIsGood={false}
-                  helper={`${previousMetrics.currentWindowLabel} vs ${previousMetrics.previousWindowLabel}`}
-                />
-                <TrendCard
-                  label="Overdue vs Prior 30 Days"
-                  current={`${previousMetrics.currentOverdue}`}
-                  delta={previousMetrics.overdueDelta}
-                  positiveIsGood={false}
-                  helper={`${previousMetrics.currentWindowLabel} vs ${previousMetrics.previousWindowLabel}`}
-                />
-                <TrendCard
-                  label="Completion Rate vs Prior 30 Days"
-                  current={`${previousMetrics.currentCompletionRate}%`}
-                  delta={previousMetrics.completionDelta}
-                  positiveIsGood={true}
-                  helper={`${previousMetrics.currentWindowLabel} vs ${previousMetrics.previousWindowLabel}`}
-                />
-              </div>
-
-              <div className="mt-6 grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-                <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_24px_70px_rgba(0,0,0,0.14)]">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="text-lg font-semibold text-white">Volume over time</div>
-                      <div className="mt-1 text-sm text-slate-400">
-                        Filing volume by due month so you can spot heavy periods instead of reacting late.
-                      </div>
-                    </div>
-                    <Link
-                      href="/calendar"
-                      className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
+                {canSeeAdvancedReports ? (
+                  <div className="relative" ref={exportMenuRef}>
+                    <button
+                      type="button"
+                      onClick={() => setExportMenuOpen((prev) => !prev)}
+                      className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
                     >
-                      View Calendar
-                    </Link>
+                      <Download size={15} />
+                      Export Report
+                      <ChevronDown size={15} />
+                    </button>
+
+                    {exportMenuOpen && (
+                      <div className="absolute right-0 z-20 mt-2 w-72 rounded-2xl border border-white/10 bg-[linear-gradient(to_bottom,rgba(12,21,37,0.98),rgba(8,15,28,0.98))] p-2 shadow-[0_24px_70px_rgba(0,0,0,0.35)]">
+                        <ExportOptionButton
+                          title="Filing Register"
+                          subtitle="Full filing-level export"
+                          onClick={() => handleExport("register")}
+                        />
+                        <ExportOptionButton
+                          title="Overdue & Risk Report"
+                          subtitle="Overdue plus next 7 days"
+                          onClick={() => handleExport("overdue")}
+                        />
+                        <ExportOptionButton
+                          title="Workload Summary"
+                          subtitle="Metrics, mix, and monthly volume"
+                          onClick={() => handleExport("summary")}
+                        />
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-300">
+                    Upgrade to {isFirmWorkspace ? "Growth" : "Operations"} to export reports
+                  </div>
+                )}
+              </div>
+
+              {!loading && !canSeeAdvancedReports ? (
+                <div className="space-y-6">
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <HeroStatCard
+                      label="Current Plan"
+                      value={formatPlan(summary.plan || (isFirmWorkspace ? "starter" : "core"))}
+                      helper="Advanced reporting is not included on this plan"
+                      icon={<BarChart3 size={18} />}
+                    />
+                    <HeroStatCard
+                      label="Workspace"
+                      value={summary.workspaceName}
+                      helper={
+                        isFirmWorkspace
+                          ? `${summary.clientCount} tracked clients`
+                          : `${summary.clientCount} tracked organizations`
+                      }
+                      icon={<PieChart size={18} />}
+                    />
+                    <HeroStatCard
+                      label="Upgrade Unlocks"
+                      value={isFirmWorkspace ? "Growth" : "Operations"}
+                      helper="Advanced reports, export tools, and deeper reporting insight"
+                      icon={<TrendingUp size={18} />}
+                    />
+                    <HeroStatCard
+                      label="Available Now"
+                      value={String(filings.length)}
+                      helper="Filings already in your workspace and ready for richer reporting"
+                      icon={<FileBarChart2 size={18} />}
+                    />
                   </div>
 
-                  <div className="mt-3 rounded-2xl border border-cyan-300/10 bg-cyan-400/[0.05] px-4 py-3 text-sm text-slate-300">
-                    {volumeInsight}
+                  <UpgradePrompt
+                    workspaceType={normalizeWorkspaceType(summary.workspaceType)}
+                    currentPlan={summary.plan}
+                    feature="advanced_reports"
+                  />
+                </div>
+              ) : (
+                <>
+                  <InsightBanner
+                    title={headlineInsight.title}
+                    body={headlineInsight.body}
+                    tone={headlineInsight.tone}
+                  />
+
+                  <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <HeroStatCard
+                      label="Completion Rate"
+                      value={`${metrics.completionRate}%`}
+                      helper={completionNarrative}
+                      icon={<CheckCircle2 size={18} />}
+                    />
+                    <HeroStatCard
+                      label="Active Workload"
+                      value={String(metrics.active)}
+                      helper="Filings that still require action"
+                      icon={<FileBarChart2 size={18} />}
+                    />
+                    <HeroStatCard
+                      label="Peak Month"
+                      value={highestMonth ? highestMonth.label : "—"}
+                      helper={highestMonth ? `${highestMonth.value} filings due` : "No data yet"}
+                      icon={<TrendingUp size={18} />}
+                    />
+                    <HeroStatCard
+                      label="Workspace"
+                      value={summary.workspaceName}
+                      helper={
+                        isFirmWorkspace
+                          ? `${summary.clientCount} tracked clients`
+                          : `${summary.clientCount} tracked organizations`
+                      }
+                      icon={<PieChart size={18} />}
+                    />
                   </div>
 
-                  {loading ? (
-                    <LoadingCard text="Loading report trends..." />
-                  ) : filingsByMonth.length === 0 ? (
-                    <EmptyCard text="No filing trend data yet." />
-                  ) : (
-                    <div className="mt-6 space-y-4">
-                      {filingsByMonth.map(([label, count]) => {
-                        const max = Math.max(...filingsByMonth.map((item) => item[1]), 1);
-                        const width = `${Math.max((count / max) * 100, 8)}%`;
-
-                        return (
-                          <div key={label}>
-                            <div className="mb-2 flex items-center justify-between text-sm">
-                              <span className="text-slate-300">{label}</span>
-                              <span className="text-white">{count}</span>
-                            </div>
-                            <div className="h-3 overflow-hidden rounded-full bg-white/10">
-                              <div
-                                className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500"
-                                style={{ width }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </section>
-
-                <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_24px_70px_rgba(0,0,0,0.14)]">
-                  <div className="text-lg font-semibold text-white">Oldest outstanding filings</div>
-                  <div className="mt-1 text-sm text-slate-400">
-                    A simple aging-style view of the next unresolved work in the queue.
+                  <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                    <MetricCard label="Total filings" value={String(metrics.total)} accent="cyan" />
+                    <MetricCard label="Filed" value={String(metrics.filed)} accent="green" />
+                    <MetricCard label="Ready" value={String(metrics.ready)} accent="blue" />
+                    <MetricCard label="Due soon" value={String(metrics.dueSoon)} accent="yellow" />
+                    <MetricCard label="Overdue" value={String(metrics.overdue)} accent="red" />
                   </div>
 
-                  {loading ? (
-                    <LoadingCard text="Loading outstanding filings..." />
-                  ) : oldestOutstanding.length === 0 ? (
-                    <EmptyCard text="No active filings right now." />
-                  ) : (
-                    <div className="mt-6 space-y-3">
-                      {oldestOutstanding.map((filing) => (
-                        <div key={filing.id} className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium text-white">{filing.filing_name}</div>
-                              <div className="mt-1 text-sm text-slate-400">
-                                {formatFriendlyDate(filing.due_date)} • {filing.jurisdiction || "—"} •{" "}
-                                {formatFrequency(filing.frequency)}
-                              </div>
-                              <div className="mt-2 text-sm text-slate-300">
-                                {formatStatus(filing.status, filing.due_date)}
-                              </div>
-                            </div>
-                            <div className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-semibold tracking-[0.16em] text-slate-300">
-                              {daysUntil(filing.due_date) < 0
-                                ? `${Math.abs(daysUntil(filing.due_date))}d late`
-                                : daysUntil(filing.due_date) === 0
-                                  ? "Today"
-                                  : `${daysUntil(filing.due_date)}d`}
-                            </div>
+                  <div className="mt-6 grid gap-6 xl:grid-cols-3">
+                    <TrendCard
+                      label="Volume vs Prior 30 Days"
+                      current={`${previousMetrics.currentTotal}`}
+                      delta={previousMetrics.totalDelta}
+                      positiveIsGood={false}
+                      helper={`${previousMetrics.currentWindowLabel} vs ${previousMetrics.previousWindowLabel}`}
+                    />
+                    <TrendCard
+                      label="Overdue vs Prior 30 Days"
+                      current={`${previousMetrics.currentOverdue}`}
+                      delta={previousMetrics.overdueDelta}
+                      positiveIsGood={false}
+                      helper={`${previousMetrics.currentWindowLabel} vs ${previousMetrics.previousWindowLabel}`}
+                    />
+                    <TrendCard
+                      label="Completion Rate vs Prior 30 Days"
+                      current={`${previousMetrics.currentCompletionRate}%`}
+                      delta={previousMetrics.completionDelta}
+                      positiveIsGood={true}
+                      helper={`${previousMetrics.currentWindowLabel} vs ${previousMetrics.previousWindowLabel}`}
+                    />
+                  </div>
+
+                  <div className="mt-6 grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+                    <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_24px_70px_rgba(0,0,0,0.14)]">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <div className="text-lg font-semibold text-white">Volume over time</div>
+                          <div className="mt-1 text-sm text-slate-400">
+                            Filing volume by due month so you can spot heavy periods instead of reacting late.
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </section>
-              </div>
+                        <Link
+                          href="/calendar"
+                          className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
+                        >
+                          View Calendar
+                        </Link>
+                      </div>
 
-              <div className="mt-6 grid gap-6 xl:grid-cols-2">
-                <ReportTableCard
-                  title="Filing mix by frequency"
-                  subtitle="See where recurring workload is concentrated."
-                  insight={frequencyInsight}
-                  loading={loading}
-                  rows={byFrequency.map(([label, count]) => ({ label, value: String(count) }))}
-                />
-                <ReportTableCard
-                  title="Filing mix by jurisdiction"
-                  subtitle="See which states or jurisdictions drive the most volume."
-                  insight={jurisdictionInsight}
-                  loading={loading}
-                  rows={byJurisdiction.map(([label, count]) => ({ label, value: String(count) }))}
-                />
-              </div>
+                      <div className="mt-3 rounded-2xl border border-cyan-300/10 bg-cyan-400/[0.05] px-4 py-3 text-sm text-slate-300">
+                        {volumeInsight}
+                      </div>
+
+                      {loading ? (
+                        <LoadingCard text="Loading report trends..." />
+                      ) : filingsByMonth.length === 0 ? (
+                        <EmptyCard text="No filing trend data yet." />
+                      ) : (
+                        <div className="mt-6 space-y-4">
+                          {filingsByMonth.map(([label, count]) => {
+                            const max = Math.max(...filingsByMonth.map((item) => item[1]), 1);
+                            const width = `${Math.max((count / max) * 100, 8)}%`;
+
+                            return (
+                              <div key={label}>
+                                <div className="mb-2 flex items-center justify-between text-sm">
+                                  <span className="text-slate-300">{label}</span>
+                                  <span className="text-white">{count}</span>
+                                </div>
+                                <div className="h-3 overflow-hidden rounded-full bg-white/10">
+                                  <div
+                                    className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500"
+                                    style={{ width }}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 shadow-[0_24px_70px_rgba(0,0,0,0.14)]">
+                      <div className="text-lg font-semibold text-white">Oldest outstanding filings</div>
+                      <div className="mt-1 text-sm text-slate-400">
+                        A simple aging-style view of the next unresolved work in the queue.
+                      </div>
+
+                      {loading ? (
+                        <LoadingCard text="Loading outstanding filings..." />
+                      ) : oldestOutstanding.length === 0 ? (
+                        <EmptyCard text="No active filings right now." />
+                      ) : (
+                        <div className="mt-6 space-y-3">
+                          {oldestOutstanding.map((filing) => (
+                            <div key={filing.id} className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium text-white">{filing.filing_name}</div>
+                                  <div className="mt-1 text-sm text-slate-400">
+                                    {formatFriendlyDate(filing.due_date)} • {filing.jurisdiction || "—"} •{" "}
+                                    {formatFrequency(filing.frequency)}
+                                  </div>
+                                  <div className="mt-2 text-sm text-slate-300">
+                                    {formatStatus(filing.status, filing.due_date)}
+                                  </div>
+                                </div>
+                                <div className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-semibold tracking-[0.16em] text-slate-300">
+                                  {daysUntil(filing.due_date) < 0
+                                    ? `${Math.abs(daysUntil(filing.due_date))}d late`
+                                    : daysUntil(filing.due_date) === 0
+                                      ? "Today"
+                                      : `${daysUntil(filing.due_date)}d`}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  </div>
+
+                  <div className="mt-6 grid gap-6 xl:grid-cols-2">
+                    <ReportTableCard
+                      title="Filing mix by frequency"
+                      subtitle="See where recurring workload is concentrated."
+                      insight={frequencyInsight}
+                      loading={loading}
+                      rows={byFrequency.map(([label, count]) => ({ label, value: String(count) }))}
+                    />
+                    <ReportTableCard
+                      title="Filing mix by jurisdiction"
+                      subtitle="See which states or jurisdictions drive the most volume."
+                      insight={jurisdictionInsight}
+                      loading={loading}
+                      rows={byJurisdiction.map(([label, count]) => ({ label, value: String(count) }))}
+                    />
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -882,6 +957,70 @@ function EmptyCard({ text }: { text: string }) {
   return (
     <div className="mt-6 rounded-2xl border border-white/10 bg-black/20 px-4 py-8 text-sm text-slate-400">
       {text}
+    </div>
+  );
+}
+
+function UpgradePrompt({
+  workspaceType,
+  currentPlan,
+  feature,
+  compact = false,
+}: {
+  workspaceType: string | null | undefined;
+  currentPlan: string | null | undefined;
+  feature: "advanced_reports";
+  compact?: boolean;
+}) {
+  const targetPlan =
+    workspaceType === "business" ? "Operations" : "Growth";
+
+  const currentPlanLabel = (() => {
+    const normalized = (currentPlan || "").toLowerCase();
+    const map: Record<string, string> = {
+      starter: "Starter",
+      growth: "Growth",
+      scale: "Scale",
+      core: "Core",
+      operations: "Operations",
+      enterprise: "Enterprise",
+    };
+    return map[normalized] || "Current plan";
+  })();
+
+  const copy = {
+    title: "Advanced reports",
+    description:
+      "Go deeper with higher-value reporting, export tools, and operational insight.",
+  };
+
+  return (
+    <div
+      className={`rounded-2xl border border-cyan-400/20 bg-cyan-400/10 ${
+        compact ? "px-4 py-4" : "px-5 py-5"
+      }`}
+    >
+      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-300/85">
+        Upgrade required
+      </div>
+      <div className="mt-2 text-lg font-semibold text-white">{copy.title}</div>
+      <div className="mt-2 text-sm leading-7 text-slate-300">
+        {copy.description} You are currently on {currentPlanLabel}. Upgrade to{" "}
+        {targetPlan} to unlock this feature.
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-3">
+        <Link
+          href="/settings/billing"
+          className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_30px_rgba(37,99,235,0.3)] transition hover:scale-[1.01]"
+        >
+          Upgrade plan
+        </Link>
+
+        <span className="inline-flex items-center rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm text-slate-300">
+          Unlock with {targetPlan}
+        </span>
+      </div>
     </div>
   );
 }
