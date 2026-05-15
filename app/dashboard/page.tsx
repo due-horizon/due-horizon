@@ -24,8 +24,18 @@ import {
   Users,
 } from "lucide-react";
 
-type FilingStatus = "upcoming" | "in_progress" | "filed" | "overdue" | "not_applicable";
-type DashboardBucket = "OVERDUE" | "DUE SOON" | "READY TO FILE" | "UPCOMING" | "FILED";
+type FilingStatus =
+  | "upcoming"
+  | "in_progress"
+  | "filed"
+  | "overdue"
+  | "not_applicable";
+type DashboardBucket =
+  | "OVERDUE"
+  | "DUE SOON"
+  | "READY TO FILE"
+  | "UPCOMING"
+  | "FILED";
 type AlertTone = "red" | "yellow" | "green";
 type MemberRole = "owner" | "admin" | "member" | "unknown";
 
@@ -81,21 +91,75 @@ function formatPlanLabel(plan: string) {
     .join(" ");
 }
 
+function normalizeWorkspaceType(
+  value?: string | null,
+): WorkspaceSummary["workspaceType"] {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+
+  if (normalized === "accounting_firm" || normalized === "firm") {
+    return "accounting_firm";
+  }
+
+  if (normalized === "business_owner" || normalized === "business") {
+    return "business_owner";
+  }
+
+  return "unknown";
+}
+
+function normalizeMemberRole(value?: string | null): MemberRole {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    normalized === "owner" ||
+    normalized === "admin" ||
+    normalized === "member"
+  ) {
+    return normalized;
+  }
+
+  if (normalized === "staff") {
+    return "member";
+  }
+
+  return "unknown";
+}
+
+function getDisplayNameFromEmail(email?: string | null) {
+  const local = String(email || "").split("@")[0] || "";
+  return local
+    .replace(/[._-]+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 function daysUntil(dateStr: string) {
   const today = new Date();
   const due = new Date(dateStr);
-  const todayUtc = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+  const todayUtc = Date.UTC(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+  );
   const dueUtc = Date.UTC(due.getFullYear(), due.getMonth(), due.getDate());
   return Math.round((dueUtc - todayUtc) / (1000 * 60 * 60 * 24));
 }
 
 function formatDaysSubtitle(days: number) {
-  if (days < 0) return `Overdue by ${Math.abs(days)} Day${Math.abs(days) === 1 ? "" : "s"}`;
+  if (days < 0)
+    return `Overdue by ${Math.abs(days)} Day${Math.abs(days) === 1 ? "" : "s"}`;
   if (days === 0) return "Due Today";
   return `Due in ${days} Day${days === 1 ? "" : "s"}`;
 }
 
-function mapDbStatusToBucket(status: FilingStatus, dueDate: string): DashboardBucket {
+function mapDbStatusToBucket(
+  status: FilingStatus,
+  dueDate: string,
+): DashboardBucket {
   if (status === "filed") return "FILED";
   if (status === "in_progress") return "READY TO FILE";
   if (status === "overdue") return "OVERDUE";
@@ -121,7 +185,8 @@ function getDashboardPresentation(bucket: DashboardBucket) {
       return {
         subtitleClass: "text-yellow-400",
         icon: "◔",
-        iconClass: "bg-yellow-500/15 text-yellow-400 border border-yellow-400/20",
+        iconClass:
+          "bg-yellow-500/15 text-yellow-400 border border-yellow-400/20",
         primaryAction: "Mark as Ready",
         primaryClass:
           "bg-yellow-400/10 text-yellow-300 border border-yellow-300/20 hover:bg-yellow-400/25",
@@ -130,7 +195,8 @@ function getDashboardPresentation(bucket: DashboardBucket) {
       return {
         subtitleClass: "text-emerald-400",
         icon: "✓",
-        iconClass: "bg-emerald-500/15 text-emerald-400 border border-emerald-400/20",
+        iconClass:
+          "bg-emerald-500/15 text-emerald-400 border border-emerald-400/20",
         primaryAction: "Mark as Filed",
         primaryClass:
           "bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 hover:from-cyan-300 hover:to-blue-400",
@@ -141,7 +207,8 @@ function getDashboardPresentation(bucket: DashboardBucket) {
         icon: "→",
         iconClass: "bg-blue-500/15 text-blue-400 border border-blue-400/20",
         primaryAction: "Start",
-        primaryClass: "bg-white/5 text-white border border-white/10 hover:bg-white/10",
+        primaryClass:
+          "bg-white/5 text-white border border-white/10 hover:bg-white/10",
       };
     case "FILED":
       return {
@@ -149,12 +216,16 @@ function getDashboardPresentation(bucket: DashboardBucket) {
         icon: "✓",
         iconClass: "bg-slate-500/10 text-slate-200 border border-white/10",
         primaryAction: "Filed",
-        primaryClass: "bg-emerald-500/10 text-emerald-300 border border-emerald-400/20",
+        primaryClass:
+          "bg-emerald-500/10 text-emerald-300 border border-emerald-400/20",
       };
   }
 }
 
-function buildDashboardFiling(filing: DbFiling, nameMap: Map<string, string>): Filing {
+function buildDashboardFiling(
+  filing: DbFiling,
+  nameMap: Map<string, string>,
+): Filing {
   const bucket = mapDbStatusToBucket(filing.status, filing.due_date);
   const ui = getDashboardPresentation(bucket);
   const entityName =
@@ -167,8 +238,8 @@ function buildDashboardFiling(filing: DbFiling, nameMap: Map<string, string>): F
     bucket === "READY TO FILE"
       ? "Ready to submit"
       : bucket === "FILED"
-      ? "Filed"
-      : dayText;
+        ? "Filed"
+        : dayText;
 
   return {
     id: filing.id,
@@ -202,6 +273,7 @@ export default function DashboardPage() {
     entityCount: 0,
   });
   const [userInitials, setUserInitials] = useState("");
+  const [userDisplayName, setUserDisplayName] = useState("");
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isAlertsOpen, setIsAlertsOpen] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -218,7 +290,10 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem("dh-sidebar-collapsed", String(isSidebarCollapsed));
+    window.localStorage.setItem(
+      "dh-sidebar-collapsed",
+      String(isSidebarCollapsed),
+    );
   }, [isSidebarCollapsed]);
 
   useEffect(() => {
@@ -243,28 +318,64 @@ export default function DashboardPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  async function resolveFirmId(userId: string, preferredFirmId?: string | null) {
+  async function resolveFirmId(
+    userId: string,
+    _preferredFirmId?: string | null,
+  ) {
     const { data: memberships, error } = await supabase
       .from("firm_members")
-      .select("firm_id")
-      .eq("user_id", userId);
+      .select("firm_id, role, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
 
     if (error) {
       console.error("Failed to resolve firm membership:", error);
-      return preferredFirmId || null;
+      return _preferredFirmId || null;
     }
 
     if (!memberships?.length) {
-      return preferredFirmId || null;
+      return _preferredFirmId || null;
     }
 
-    const membershipIds = memberships.map((membership) => membership.firm_id);
+    const membershipIds = memberships
+      .map((membership) => membership.firm_id)
+      .filter((firmId): firmId is string => Boolean(firmId));
 
-    if (preferredFirmId && membershipIds.includes(preferredFirmId)) {
-      return preferredFirmId;
+    if (!membershipIds.length) {
+      return _preferredFirmId || null;
     }
 
-    return membershipIds[0] ?? null;
+    // Strongest source of truth: pick the workspace that actually has filings.
+    // This prevents the dashboard from loading an old/empty firm membership.
+    const filingCounts = await Promise.all(
+      membershipIds.map(async (firmId) => {
+        const { count, error: countError } = await supabase
+          .from("filings")
+          .select("id", { count: "exact", head: true })
+          .or(`firm_id.eq.${firmId},workspace_id.eq.${firmId}`);
+
+        if (countError) {
+          console.error("Failed to count filings for firm:", firmId, countError);
+          return { firmId, count: 0 };
+        }
+
+        return { firmId, count: count || 0 };
+      }),
+    );
+
+    const firmWithFilings = filingCounts.find((item) => item.count > 0);
+    if (firmWithFilings) {
+      return firmWithFilings.firmId;
+    }
+
+    const ownerMembership = memberships.find(
+      (membership) => membership.role === "owner",
+    );
+    const adminMembership = memberships.find(
+      (membership) => membership.role === "admin",
+    );
+
+    return ownerMembership?.firm_id || adminMembership?.firm_id || membershipIds[0] || null;
   }
 
   async function loadDashboard() {
@@ -279,21 +390,25 @@ export default function DashboardPage() {
       return;
     }
 
+    const profileDisplayName =
+      typeof user.user_metadata?.full_name === "string" &&
+      user.user_metadata.full_name.trim()
+        ? user.user_metadata.full_name.trim()
+        : typeof user.user_metadata?.name === "string" &&
+            user.user_metadata.name.trim()
+          ? user.user_metadata.name.trim()
+          : getDisplayNameFromEmail(user.email) || user.email || "Account";
 
-    const nameFromUser =
-      user.user_metadata?.full_name ||
-      user.user_metadata?.name ||
-      user.email ||
-      "";
-
-    const initials = String(nameFromUser)
+    const initials = String(profileDisplayName)
       .split(" ")
+      .filter(Boolean)
       .map((part) => part[0])
       .join("")
       .slice(0, 2)
       .toUpperCase();
 
-    setUserInitials(initials || "");
+    setUserDisplayName(profileDisplayName);
+    setUserInitials(initials || "U");
 
     const resolvedWorkspaceId = await resolveFirmId(
       user.id,
@@ -301,94 +416,124 @@ export default function DashboardPage() {
         ? user.user_metadata.firm_id
         : typeof user.user_metadata?.workspace_id === "string"
           ? user.user_metadata.workspace_id
-          : null
+          : null,
     );
+
+    console.log("Dashboard resolved firm ID:", resolvedWorkspaceId);
 
     if (!resolvedWorkspaceId) {
       setFilings([]);
+      setWorkspaceSummary((current) => ({
+        ...current,
+        workspaceName:
+          (typeof user.user_metadata?.firm_name === "string" &&
+            user.user_metadata.firm_name.trim()) ||
+          (typeof user.user_metadata?.workspace_name === "string" &&
+            user.user_metadata.workspace_name.trim()) ||
+          current.workspaceName ||
+          "Your Workspace",
+      }));
       setLoading(false);
       return;
     }
 
     const [
       { data: membership },
-      { data: workspace },
       { data: firmBilling },
       { data: clients },
       { data: organizations },
       { data: filingsData, error: filingsError },
     ] = await Promise.all([
       supabase
-        .from("workspace_members")
-        .select("member_role, role")
-        .eq("workspace_id", resolvedWorkspaceId)
+        .from("firm_members")
+        .select("role")
+        .eq("firm_id", resolvedWorkspaceId)
         .eq("user_id", user.id)
         .maybeSingle(),
       supabase
-        .from("workspaces")
-        .select("id, name, workspace_type")
-        .eq("id", resolvedWorkspaceId)
-        .single(),
-      supabase
         .from("firms")
-        .select("id, plan, subscription_status, stripe_customer_id, type")
+        .select("id, name, plan, subscription_status, stripe_customer_id, type")
         .eq("id", resolvedWorkspaceId)
         .maybeSingle(),
       supabase
         .from("clients")
         .select("id, client_name")
-        .eq("workspace_id", resolvedWorkspaceId),
+        .or(
+          `workspace_id.eq.${resolvedWorkspaceId},firm_id.eq.${resolvedWorkspaceId}`,
+        ),
       supabase
         .from("organizations")
         .select("id, legal_name, display_name")
-        .eq("workspace_id", resolvedWorkspaceId),
+        .or(
+          `workspace_id.eq.${resolvedWorkspaceId},firm_id.eq.${resolvedWorkspaceId}`,
+        ),
       supabase
         .from("filings")
-        .select("id, filing_name, filing_code, jurisdiction, frequency, due_date, status, priority, client_id, organization_id")
-        .or(`workspace_id.eq.${resolvedWorkspaceId},firm_id.eq.${resolvedWorkspaceId}`)
+        .select(
+          "id, filing_name, filing_code, jurisdiction, frequency, due_date, status, priority, client_id, organization_id",
+        )
+        .or(
+          `workspace_id.eq.${resolvedWorkspaceId},firm_id.eq.${resolvedWorkspaceId}`,
+        )
         .order("due_date", { ascending: true }),
     ]);
 
     if (filingsError) {
-      console.error(filingsError);
+      console.error("Dashboard filings error:", filingsError);
       setFilings([]);
       setLoading(false);
       return;
     }
 
-    const roleValue = String(membership?.member_role || membership?.role || "unknown").toLowerCase();
-    setMemberRole(
-      roleValue === "owner" || roleValue === "admin" || roleValue === "member"
-        ? (roleValue as MemberRole)
-        : "unknown"
-    );
+    console.log("Dashboard filings loaded:", filingsData?.length || 0);
+
+    const roleValue = normalizeMemberRole(membership?.role);
+    setMemberRole(roleValue);
 
     const nameMap = new Map<string, string>();
-    (clients || []).forEach((client) => nameMap.set(client.id, client.client_name));
-    (organizations || []).forEach((org) => nameMap.set(org.id, org.display_name || org.legal_name));
+    (clients || []).forEach((client) =>
+      nameMap.set(client.id, client.client_name),
+    );
+    (organizations || []).forEach((org) =>
+      nameMap.set(org.id, org.display_name || org.legal_name),
+    );
 
     const mapped = ((filingsData || []) as DbFiling[]).map((filing) =>
-      buildDashboardFiling(filing, nameMap)
+      buildDashboardFiling(filing, nameMap),
     );
 
     setFilings(mapped);
-    const resolvedWorkspaceType =
-      (firmBilling?.type as "accounting_firm" | "business_owner" | "unknown" | undefined) ||
-      workspace?.workspace_type ||
-      "unknown";
+    const resolvedWorkspaceType = normalizeWorkspaceType(
+      (typeof firmBilling?.type === "string" && firmBilling.type) ||
+        (typeof user.user_metadata?.pending_account_type === "string" &&
+          user.user_metadata.pending_account_type) ||
+        null,
+    );
+
+    const resolvedWorkspaceName =
+      (typeof firmBilling?.name === "string" && firmBilling.name.trim()) ||
+      (typeof user.user_metadata?.firm_name === "string" &&
+        user.user_metadata.firm_name.trim()) ||
+      (typeof user.user_metadata?.workspace_name === "string" &&
+        user.user_metadata.workspace_name.trim()) ||
+      "Your Workspace";
 
     setWorkspaceSummary({
-      workspaceName: workspace?.name || "",
+      workspaceName: resolvedWorkspaceName,
       workspaceType: resolvedWorkspaceType,
       plan:
         (typeof firmBilling?.plan === "string" && firmBilling.plan) ||
-        (typeof user.user_metadata?.plan === "string" && user.user_metadata.plan) ||
+        (typeof user.user_metadata?.plan === "string" &&
+          user.user_metadata.plan) ||
         "starter",
       subscriptionStatus:
-        (typeof firmBilling?.subscription_status === "string" && firmBilling.subscription_status) ||
+        (typeof firmBilling?.subscription_status === "string" &&
+          firmBilling.subscription_status) ||
         "inactive",
       stripeCustomerId:
-        typeof firmBilling?.stripe_customer_id === "string" ? firmBilling.stripe_customer_id : null,
+        typeof firmBilling?.stripe_customer_id === "string"
+          ? firmBilling.stripe_customer_id
+          : null,
       firmId: resolvedWorkspaceId,
       entityCount:
         resolvedWorkspaceType === "accounting_firm"
@@ -434,11 +579,14 @@ export default function DashboardPage() {
           primaryAction: ui.primaryAction,
           primaryClass: ui.primaryClass,
         };
-      })
+      }),
     );
     setOpenMenuId(null);
 
-    const { error } = await supabase.from("filings").update({ status: nextStatus }).eq("id", id);
+    const { error } = await supabase
+      .from("filings")
+      .update({ status: nextStatus })
+      .eq("id", id);
 
     if (error) {
       console.error(error);
@@ -465,41 +613,42 @@ export default function DashboardPage() {
     setIsAlertsOpen(false);
   }
 
-  const alerts: { title: string; subtitle: string; tone: AlertTone }[] = useMemo(() => {
-    const activeFilings = filings.filter((f) => f.bucket !== "FILED");
+  const alerts: { title: string; subtitle: string; tone: AlertTone }[] =
+    useMemo(() => {
+      const activeFilings = filings.filter((f) => f.bucket !== "FILED");
 
-    const overdueAlerts = activeFilings
-      .filter((f) => f.bucket === "OVERDUE")
-      .map((f) => ({
-        title: f.title,
-        subtitle: `${f.company} • ${f.subtitle}`,
-        tone: "red" as AlertTone,
-      }));
+      const overdueAlerts = activeFilings
+        .filter((f) => f.bucket === "OVERDUE")
+        .map((f) => ({
+          title: f.title,
+          subtitle: `${f.company} • ${f.subtitle}`,
+          tone: "red" as AlertTone,
+        }));
 
-    const dueSoonAlerts = activeFilings
-      .filter((f) => f.bucket === "DUE SOON")
-      .map((f) => ({
-        title: f.title,
-        subtitle: `${f.company} • ${f.subtitle}`,
-        tone: "yellow" as AlertTone,
-      }));
+      const dueSoonAlerts = activeFilings
+        .filter((f) => f.bucket === "DUE SOON")
+        .map((f) => ({
+          title: f.title,
+          subtitle: `${f.company} • ${f.subtitle}`,
+          tone: "yellow" as AlertTone,
+        }));
 
-    const readyAlerts = activeFilings
-      .filter((f) => f.bucket === "READY TO FILE")
-      .map((f) => ({
-        title: f.title,
-        subtitle: `${f.company} • Ready to submit`,
-        tone: "green" as AlertTone,
-      }));
+      const readyAlerts = activeFilings
+        .filter((f) => f.bucket === "READY TO FILE")
+        .map((f) => ({
+          title: f.title,
+          subtitle: `${f.company} • Ready to submit`,
+          tone: "green" as AlertTone,
+        }));
 
-    return [...overdueAlerts, ...dueSoonAlerts, ...readyAlerts].slice(0, 6);
-  }, [filings]);
+      return [...overdueAlerts, ...dueSoonAlerts, ...readyAlerts].slice(0, 6);
+    }, [filings]);
 
   const activeFilings = filings.filter((f) => f.bucket !== "FILED");
   const filedFilings = filings.filter((f) => f.bucket === "FILED");
 
   const attentionCount = filings.filter(
-    (f) => f.bucket === "OVERDUE" || f.bucket === "DUE SOON"
+    (f) => f.bucket === "OVERDUE" || f.bucket === "DUE SOON",
   ).length;
 
   const dueSoonCount = filings.filter((f) => f.bucket === "DUE SOON").length;
@@ -522,7 +671,10 @@ export default function DashboardPage() {
     {
       label: "Entities",
       value: String(workspaceSummary.entityCount),
-      helper: workspaceSummary.workspaceType === "accounting_firm" ? "Across clients" : "Tracked in workspace",
+      helper:
+        workspaceSummary.workspaceType === "accounting_firm"
+          ? "Across clients"
+          : "Tracked in workspace",
     },
     {
       label: "Risk",
@@ -540,11 +692,14 @@ export default function DashboardPage() {
     const coveredEntities = new Set(
       filings
         .map((filing) => filing.company)
-        .filter((company) => company && company !== "Workspace")
+        .filter((company) => company && company !== "Workspace"),
     );
 
     const entitiesWithFilings = coveredEntities.size;
-    const entitiesWithoutFilings = Math.max(workspaceSummary.entityCount - entitiesWithFilings, 0);
+    const entitiesWithoutFilings = Math.max(
+      workspaceSummary.entityCount - entitiesWithFilings,
+      0,
+    );
 
     return {
       entitiesWithoutFilings,
@@ -560,7 +715,9 @@ export default function DashboardPage() {
     {
       label: "Next move",
       value: topPriority ? topPriority.primaryAction : "Set up filings",
-      helper: topPriority ? `${topPriority.title} • ${topPriority.company}` : "Create your first filing to activate the dashboard",
+      helper: topPriority
+        ? `${topPriority.title} • ${topPriority.company}`
+        : "Create your first filing to activate the dashboard",
     },
     {
       label: "Queue pressure",
@@ -639,830 +796,1204 @@ export default function DashboardPage() {
       `}</style>
 
       <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(34,211,238,0.055),transparent_30%),linear-gradient(to_bottom,#07111f,#020617)] text-white">
-      <div className="mx-auto max-w-[1700px] px-4 py-4 sm:px-6 sm:py-6">
-        <div className="rounded-[30px] border border-cyan-400/10 bg-white/[0.03] p-3 shadow-[0_24px_70px_rgba(0,0,0,0.24)] sm:p-4">
-          <div className="overflow-hidden rounded-[26px] border border-white/10 bg-[linear-gradient(to_bottom,rgba(11,21,38,0.96),rgba(8,15,28,0.98))] shadow-[0_30px_80px_rgba(0,0,0,0.38)]">
-            <div
-              className="lg:grid"
-              style={{ gridTemplateColumns: isSidebarCollapsed ? "88px minmax(0,1fr)" : "272px minmax(0,1fr)" }}
-            >
-              <aside
-                className={`hidden border-r border-white/10 bg-[linear-gradient(to_bottom,rgba(8,15,28,0.99),rgba(6,12,23,0.99))] lg:flex lg:min-h-[calc(100vh-9rem)] lg:flex-col transition-all duration-300 ease-out ${isSidebarCollapsed ? "px-3" : ""}`}
+        <div className="mx-auto max-w-[1700px] px-4 py-4 sm:px-6 sm:py-6">
+          <div className="rounded-[30px] border border-cyan-400/10 bg-white/[0.03] p-3 shadow-[0_24px_70px_rgba(0,0,0,0.24)] sm:p-4">
+            <div className="overflow-hidden rounded-[26px] border border-white/10 bg-[linear-gradient(to_bottom,rgba(11,21,38,0.96),rgba(8,15,28,0.98))] shadow-[0_30px_80px_rgba(0,0,0,0.38)]">
+              <div
+                className="lg:grid"
+                style={{
+                  gridTemplateColumns: isSidebarCollapsed
+                    ? "88px minmax(0,1fr)"
+                    : "272px minmax(0,1fr)",
+                }}
               >
-                <div className={`border-b border-white/10 ${isSidebarCollapsed ? "px-2 py-6" : "px-5 py-6"} transition-all duration-300`}>
-                  <div className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "justify-between gap-4"} transition-all duration-300`}>
-                    <div className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "gap-4"} transition-all duration-300`}>
-                      <div className="relative flex items-center justify-center transition-all duration-300 hover:scale-[1.05]">
-                        <div className="absolute inset-0 rounded-xl bg-cyan-400/8 blur-xl" />
-                        <Image
-                          src="/logo-final.png"
-                          alt="Due Horizon"
-                          width={32}
-                          height={32}
-                          className="relative drop-shadow-[0_0_12px_rgba(34,211,238,0.28)] transition-all duration-300"
-                        />
-                      </div>
-
-                      <div
-                        className={`grid transition-all duration-300 ease-out ${
-                          isSidebarCollapsed
-                            ? "max-w-0 grid-cols-[0fr] opacity-0 translate-x-[-8px] overflow-hidden"
-                            : "max-w-[160px] grid-cols-[1fr] opacity-100 translate-x-0"
-                        }`}
-                      >
-                        <div className="min-w-0 overflow-hidden">
-                          <div className="whitespace-nowrap text-sm font-semibold tracking-tight text-white">Due Horizon</div>
-                          <div className="mt-1 truncate whitespace-nowrap text-[11px] text-slate-400">
-                            Compliance OS
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
+                <aside
+                  className={`hidden border-r border-white/10 bg-[linear-gradient(to_bottom,rgba(8,15,28,0.99),rgba(6,12,23,0.99))] lg:flex lg:min-h-[calc(100vh-9rem)] lg:flex-col transition-all duration-300 ease-out ${isSidebarCollapsed ? "px-3" : ""}`}
+                >
+                  <div
+                    className={`border-b border-white/10 ${isSidebarCollapsed ? "px-2 py-6" : "px-5 py-6"} transition-all duration-300`}
+                  >
                     <div
-                      className={`transition-all duration-300 ${
-                        isSidebarCollapsed ? "pointer-events-none w-0 translate-x-2 overflow-hidden opacity-0" : "w-auto translate-x-0 opacity-100"
-                      }`}
+                      className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "justify-between gap-4"} transition-all duration-300`}
                     >
-                      <button
-                        type="button"
-                        onClick={() => setIsSidebarCollapsed(true)}
-                        className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-slate-300 transition hover:border-cyan-300/20 hover:bg-cyan-400/7 hover:text-cyan-200"
-                        aria-label="Collapse sidebar"
+                      <div
+                        className={`flex items-center ${isSidebarCollapsed ? "justify-center" : "gap-4"} transition-all duration-300`}
                       >
-                        <ChevronLeft size={16} />
-                      </button>
-                    </div>
-                  </div>
-
-                  {isSidebarCollapsed && (
-                    <button
-                      type="button"
-                      onClick={() => setIsSidebarCollapsed(false)}
-                      className="mt-4 flex h-9 w-full items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-slate-300 transition hover:border-cyan-300/20 hover:bg-cyan-400/7 hover:text-cyan-200"
-                      aria-label="Expand sidebar"
-                    >
-                      <ChevronRight size={16} />
-                    </button>
-                  )}
-                </div>
-
-                <div className={`flex-1 ${isSidebarCollapsed ? "py-5" : "px-4 py-5"}`}>
-                  {!isSidebarCollapsed && (
-                    <div className="mb-3 px-3 text-[11px] font-semibold tracking-[0.18em] text-slate-500">
-                      NAVIGATION
-                    </div>
-                  )}
-
-                  <nav className="space-y-2">
-                    <SidebarNavItem
-                      href="/dashboard"
-                      label="Dashboard"
-                      icon={LayoutDashboard}
-                      pathname={pathname}
-                      collapsed={isSidebarCollapsed}
-                      badge={attentionCount > 0 ? String(attentionCount) : undefined}
-                    />
-                    <SidebarNavItem
-                      href="/filings"
-                      label="Filings"
-                      icon={FileText}
-                      pathname={pathname}
-                      collapsed={isSidebarCollapsed}
-                    />
-                    <SidebarNavItem
-                      href="/portal/dashboard"
-                      label="Client Portal"
-                      icon={MessageSquare}
-                      pathname={pathname}
-                      collapsed={isSidebarCollapsed}
-                    />
-                    <SidebarNavItem
-                      href="/calendar"
-                      label="Calendar"
-                      icon={Calendar}
-                      pathname={pathname}
-                      collapsed={isSidebarCollapsed}
-                    />
-                    <SidebarNavItem
-                      href="/reports"
-                      label="Reports"
-                      icon={CheckCircle2}
-                      pathname={pathname}
-                      collapsed={isSidebarCollapsed}
-                    />
-                    {canManageTeam && (
-                      <SidebarNavItem
-                        href="/team"
-                        label="Team"
-                        icon={Users}
-                        pathname={pathname}
-                        collapsed={isSidebarCollapsed}
-                        badge={memberRole === "owner" ? "Owner" : "Admin"}
-                      />
-                    )}
-                    <SidebarNavItem
-                      href="/settings"
-                      label="Settings"
-                      icon={Settings}
-                      pathname={pathname}
-                      collapsed={isSidebarCollapsed}
-                    />
-                  </nav>
-
-                  {!isSidebarCollapsed && (
-                    <div className="mt-8 overflow-hidden rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(12,21,37,0.84),rgba(7,14,27,0.72))] shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_18px_40px_rgba(2,6,23,0.28)]">
-                      <div className="border-b border-white/10 bg-[linear-gradient(90deg,rgba(34,211,238,0.12),rgba(255,255,255,0))] px-4 py-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
-                              WORKSPACE
-                            </div>
-                            <div className="mt-2 text-sm font-semibold text-white">{workspaceSummary.workspaceName || "Your Workspace"}</div>
-                            <div className="mt-1 text-xs text-slate-400">
-                              {formattedPlan} Plan • {workspaceSummary.workspaceType === "accounting_firm" ? "Accounting firm" : workspaceSummary.workspaceType === "business_owner" ? "Business" : "Workspace"}
-                            </div>
-                          </div>
-                          <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${workspaceHealth.pillClass}`}>
-                            <span className={`h-1.5 w-1.5 rounded-full ${workspaceHealth.dotClass}`} />
-                            Synced
-                          </div>
-                        </div>
-
-                        <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <div>
-                              <div className="text-xs font-semibold text-white">{workspaceHealth.title}</div>
-                              <div className="mt-1 text-[11px] leading-5 text-slate-400">{workspaceHealth.detail}</div>
-                            </div>
-                            <div className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${workspaceHealth.pillClass}`}>
-                              {attentionCount === 0 ? "Clear" : `${attentionCount} active`}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="space-y-3 p-4">
-                        {workspaceSummaryCards.map((item) => (
-                          <div
-                            key={item.label}
-                            className="flex items-center justify-between rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0.02))] px-3 py-3"
-                          >
-                            <div className="min-w-0">
-                              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{item.label}</div>
-                              <div className="mt-1 truncate text-[11px] text-slate-400">{item.helper}</div>
-                            </div>
-                            <div className="ml-4 text-base font-semibold text-white">{item.value}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className={`${isSidebarCollapsed ? "p-3" : "p-4"} border-t border-white/10`}>
-                  {!isSidebarCollapsed ? (
-                    <div className="overflow-hidden rounded-[24px] border border-cyan-400/12 bg-[linear-gradient(145deg,rgba(15,23,42,0.86),rgba(5,11,22,0.94))] shadow-[0_18px_42px_rgba(2,6,23,0.34)]">
-                      <div className="border-b border-white/10 bg-[linear-gradient(90deg,rgba(34,211,238,0.16),rgba(59,130,246,0.06),rgba(255,255,255,0))] px-4 py-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-200/80">Next step</div>
-                            <div className="mt-1 text-sm font-semibold text-white">Open filing queue</div>
-                          </div>
-                          <div className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${workspaceHealth.pillClass}`}>
-                            {attentionCount === 0 ? "Stable" : "Review"}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="p-4">
-                        <div className="text-xs leading-5 text-slate-300">
-                          {attentionCount === 0
-                            ? "Everything urgent is under control. Use the workspace to monitor what is coming next."
-                            : `${attentionCount} filing${attentionCount === 1 ? "" : "s"} require action. Open the workspace to clear the queue in order.`}
-                        </div>
-                        <Link
-                          href="/filings"
-                          className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[linear-gradient(135deg,rgba(34,211,238,0.96),rgba(59,130,246,0.92))] px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_12px_30px_rgba(34,211,238,0.24)] transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_18px_34px_rgba(34,211,238,0.3)]"
-                        >
-                          Open Filing Queue
-                          <ArrowRight size={16} />
-                        </Link>
-                      </div>
-                    </div>
-                  ) : (
-                    <Link
-                      href="/filings"
-                      className="flex h-12 w-full items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-400/7 text-cyan-200 transition hover:bg-cyan-400/15"
-                      title="Open Filing Queue"
-                    >
-                      <ArrowRight size={18} />
-                    </Link>
-                  )}
-                </div>
-              </aside>
-
-              <div className="min-w-0">
-                <div className="border-b border-white/10 px-4 py-4 sm:px-6">
-                  <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-4 lg:hidden">
-                        <div className="relative flex items-center justify-center">
+                        <div className="relative flex items-center justify-center transition-all duration-300 hover:scale-[1.05]">
                           <div className="absolute inset-0 rounded-xl bg-cyan-400/8 blur-xl" />
                           <Image
                             src="/logo-final.png"
                             alt="Due Horizon"
                             width={32}
                             height={32}
-                            className="relative drop-shadow-[0_0_12px_rgba(34,211,238,0.28)]"
+                            className="relative drop-shadow-[0_0_12px_rgba(34,211,238,0.28)] transition-all duration-300"
                           />
                         </div>
-                        <div>
-                          <div className="text-lg font-semibold tracking-tight">Due Horizon</div>
-                          <div className="text-xs text-slate-400">Compliance OS</div>
+
+                        <div
+                          className={`grid transition-all duration-300 ease-out ${
+                            isSidebarCollapsed
+                              ? "max-w-0 grid-cols-[0fr] opacity-0 translate-x-[-8px] overflow-hidden"
+                              : "max-w-[160px] grid-cols-[1fr] opacity-100 translate-x-0"
+                          }`}
+                        >
+                          <div className="min-w-0 overflow-hidden">
+                            <div className="whitespace-nowrap text-sm font-semibold tracking-tight text-white">
+                              Due Horizon
+                            </div>
+                            <div className="mt-1 truncate whitespace-nowrap text-[11px] text-slate-400">
+                              Compliance OS
+                            </div>
+                          </div>
                         </div>
                       </div>
 
-                      <div className="hidden lg:block">
-                        <div className="text-xs font-semibold tracking-[0.18em] text-cyan-300/80">
-                          DASHBOARD
-                        </div>
-                        <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
-                          Start here — <span className="text-cyan-300">{attentionCount}</span>{" "}
-                          {attentionCount === 1 ? "filing needs attention" : "filings need attention"}
-                        </h1>
-                        <p className="mt-2 text-slate-400">
-                          Clear the highest-risk item first, then work down the queue.
-                        </p>
-                        <div className="mt-2 text-sm text-slate-500">
-                          {overdueCount} at risk • {dueSoonCount} due next • {readyCount} ready to file
-                        </div>
+                      <div
+                        className={`transition-all duration-300 ${
+                          isSidebarCollapsed
+                            ? "pointer-events-none w-0 translate-x-2 overflow-hidden opacity-0"
+                            : "w-auto translate-x-0 opacity-100"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setIsSidebarCollapsed(true)}
+                          className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-slate-300 transition hover:border-cyan-300/20 hover:bg-cyan-400/7 hover:text-cyan-200"
+                          aria-label="Collapse sidebar"
+                        >
+                          <ChevronLeft size={16} />
+                        </button>
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-3 self-start xl:self-auto">
-                      {canManageTeam && (
-                        <Link
-                          href="/team"
-                          className="hidden sm:inline-flex items-center gap-2 rounded-xl border border-cyan-300/20 bg-cyan-400/7 px-4 py-2 text-sm text-cyan-100 transition hover:bg-cyan-400/15"
-                        >
-                          <UserPlus size={16} />
-                          Invite
-                        </Link>
-                      )}
+                    {isSidebarCollapsed && (
+                      <button
+                        type="button"
+                        onClick={() => setIsSidebarCollapsed(false)}
+                        className="mt-4 flex h-9 w-full items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-slate-300 transition hover:border-cyan-300/20 hover:bg-cyan-400/7 hover:text-cyan-200"
+                        aria-label="Expand sidebar"
+                      >
+                        <ChevronRight size={16} />
+                      </button>
+                    )}
+                  </div>
 
-                      <Link
+                  <div
+                    className={`flex-1 ${isSidebarCollapsed ? "py-5" : "px-4 py-5"}`}
+                  >
+                    {!isSidebarCollapsed && (
+                      <div className="mb-3 px-3 text-[11px] font-semibold tracking-[0.18em] text-slate-500">
+                        NAVIGATION
+                      </div>
+                    )}
+
+                    <nav className="space-y-2">
+                      <SidebarNavItem
+                        href="/dashboard"
+                        label="Dashboard"
+                        icon={LayoutDashboard}
+                        pathname={pathname}
+                        collapsed={isSidebarCollapsed}
+                        badge={
+                          attentionCount > 0
+                            ? String(attentionCount)
+                            : undefined
+                        }
+                      />
+                      <SidebarNavItem
                         href="/filings"
-                        className="hidden sm:inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
-                      >
-                        View filings →
-                      </Link>
-                      <Link
+                        label="Filings"
+                        icon={FileText}
+                        pathname={pathname}
+                        collapsed={isSidebarCollapsed}
+                      />
+                      <SidebarNavItem
                         href="/portal/dashboard"
-                        className="hidden sm:inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
-                      >
-                        Client portal →
-                      </Link>
-
-                      <div className="relative" ref={alertsRef}>
-                        <button
-                          type="button"
-                          onClick={() => setIsAlertsOpen((prev) => !prev)}
-                          className={`relative flex h-10 w-10 items-center justify-center rounded-xl border text-sm text-slate-200 transition ${
-                            isAlertsOpen
-                              ? "border-cyan-300/40 bg-white/10 shadow-[0_0_18px_rgba(34,211,238,0.14)]"
-                              : "border-white/10 bg-white/5 hover:bg-white/10"
-                          }`}
-                        >
-                          <Bell size={18} className="text-slate-300" />
-
-                          {alerts.length > 0 && (
-                            <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-white/10 bg-slate-700 px-1 text-[9px] font-semibold text-white">
-                              {alerts.length}
-                            </span>
-                          )}
-                        </button>
-
-                        {isAlertsOpen && (
-                          <div className="absolute right-0 top-full z-50 mt-3 w-80 overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(to_bottom,rgba(12,21,37,0.98),rgba(8,15,28,0.98))] shadow-[0_24px_70px_rgba(0,0,0,0.5)] backdrop-blur-xl">
-                            <div className="flex items-center justify-between border-b border-white/10 px-4 py-4">
-                              <div>
-                                <div className="text-sm font-semibold text-white">Alerts</div>
-                                <div className="mt-1 text-xs text-slate-400">
-                                  {alerts.length} items need attention
-                                </div>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={handleMarkAllAlertsRead}
-                                className="text-xs text-cyan-300 hover:text-cyan-200"
-                              >
-                                Mark all read
-                              </button>
-                            </div>
-
-                            <div className="py-2">
-                              {alerts.length > 0 ? (
-                                alerts.map((alert, index) => (
-                                  <AlertItem
-                                    key={`${alert.title}-${index}`}
-                                    title={alert.title}
-                                    subtitle={alert.subtitle}
-                                    tone={alert.tone}
-                                  />
-                                ))
-                              ) : (
-                                <div className="px-4 py-6 text-sm text-slate-400">
-                                  No active alerts right now.
-                                </div>
-                              )}
-                            </div>
-
-                            <div className="border-t border-white/10 p-3">
-                              <Link
-                                href="/filings"
-                                className="block rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center text-sm text-slate-200 hover:bg-white/10"
-                              >
-                                View all alerts
-                              </Link>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="relative" ref={profileRef}>
-                        <button
-                          type="button"
-                          onClick={() => setIsProfileOpen((prev) => !prev)}
-                          className={`flex items-center gap-3 rounded-xl border px-3 py-2 transition hover:scale-[1.02] ${
-                            isProfileOpen
-                              ? "border-cyan-300/40 bg-white/10 shadow-[0_0_18px_rgba(34,211,238,0.14)]"
-                              : "border-white/10 bg-white/5 hover:bg-white/10"
-                          }`}
-                        >
-                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 text-xs font-semibold text-slate-950">
-                            {userInitials}
-                          </div>
-                          <div className="hidden text-left leading-tight sm:block">
-                            <div className="text-sm font-semibold">{userInitials}</div>
-                            <div className="text-xs text-slate-400">{workspaceSummary.workspaceName || "Your Workspace"}</div>
-                          </div>
-                          <div className={`text-xs text-slate-400 transition ${isProfileOpen ? "rotate-180" : ""}`}>
-                            ⌄
-                          </div>
-                        </button>
-
-                        {isProfileOpen && (
-                          <div className="absolute right-0 top-full z-50 mt-3 w-72 overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(to_bottom,rgba(12,21,37,0.98),rgba(8,15,28,0.98))] shadow-[0_24px_70px_rgba(0,0,0,0.5)] backdrop-blur-xl">
-                            <div className="border-b border-white/10 px-4 py-4">
-                              <div className="flex items-center gap-3">
-                                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 text-sm font-semibold text-slate-950">
-                                  {userInitials}
-                                </div>
-                                <div>
-                                  <div className="text-sm font-semibold text-white">{workspaceSummary.workspaceName || "Your Workspace"}</div>
-                                  <div className="mt-1 text-xs text-slate-400">
-                                    {workspaceSummary.workspaceType === "accounting_firm"
-                                      ? "Accounting firm"
-                                      : workspaceSummary.workspaceType === "business_owner"
-                                      ? "Business"
-                                      : "Workspace"} • {memberRole !== "unknown" ? memberRole : "owner"}
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="py-2">
-                              {canManageTeam && (
-                                <DropdownItem href="/team" label="Team" icon={<Users size={15} />} />
-                              )}
-                              <DropdownItem href="/settings" label="Account Settings" icon={<Settings size={15} />} />
-                            </div>
-
-                            <div className="mx-3 h-px bg-white/10" />
-
-                            <div className="py-2">
-                              <DropdownItem href="/support" label="Help & Support" icon={<LifeBuoy size={15} />} />
-                              <DropdownItem href="/logout" label="Logout" icon={<LogOut size={15} />} danger />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-4 flex gap-2 overflow-x-auto pb-1 lg:hidden">
-                    <MobileNavPill href="/dashboard" label="Dashboard" pathname={pathname} />
-                    <MobileNavPill href="/filings" label="Filings" pathname={pathname} />
-                    <MobileNavPill href="/portal/dashboard" label="Client Portal" pathname={pathname} />
-                    <MobileNavPill href="/calendar" label="Calendar" pathname={pathname} />
-                    <MobileNavPill href="/reports" label="Reports" pathname={pathname} />
-                    {canManageTeam && <MobileNavPill href="/team" label="Team" pathname={pathname} />}
-                    <MobileNavPill href="/settings" label="Settings" pathname={pathname} />
-                  </div>
-
-                  <div className="mt-4 lg:hidden">
-                    <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-                      Start here — <span className="text-cyan-300">{attentionCount}</span>{" "}
-                      {attentionCount === 1 ? "filing needs attention" : "filings need attention"}
-                    </h1>
-                    <p className="mt-2 text-slate-400">
-                      Clear the highest-risk item first, then work down the queue.
-                    </p>
-                    <div className="mt-2 text-sm text-slate-500">
-                      {overdueCount} at risk • {dueSoonCount} due next • {readyCount} ready to file
-                    </div>
-                  </div>
-                </div>
-
-                <div className="overflow-visible px-4 py-6 sm:px-6 sm:py-8">
-                  <div className="mx-auto max-w-[1240px]">
-                    <div className="mb-5 flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.18em] text-slate-500">
-                      <span>Plan</span>
-                      <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-slate-300">{formattedPlan}</span>
+                        label="Client Portal"
+                        icon={MessageSquare}
+                        pathname={pathname}
+                        collapsed={isSidebarCollapsed}
+                      />
+                      <SidebarNavItem
+                        href="/calendar"
+                        label="Calendar"
+                        icon={Calendar}
+                        pathname={pathname}
+                        collapsed={isSidebarCollapsed}
+                      />
+                      <SidebarNavItem
+                        href="/reports"
+                        label="Reports"
+                        icon={CheckCircle2}
+                        pathname={pathname}
+                        collapsed={isSidebarCollapsed}
+                      />
                       {canManageTeam && (
-                        <span className="rounded-full border border-cyan-300/15 bg-cyan-400/7 px-2 py-1 text-cyan-200">
-                          {memberRole}
-                        </span>
+                        <SidebarNavItem
+                          href="/team"
+                          label="Team"
+                          icon={Users}
+                          pathname={pathname}
+                          collapsed={isSidebarCollapsed}
+                          badge={memberRole === "owner" ? "Owner" : "Admin"}
+                        />
                       )}
-                    </div>
+                      <SidebarNavItem
+                        href="/settings"
+                        label="Settings"
+                        icon={Settings}
+                        pathname={pathname}
+                        collapsed={isSidebarCollapsed}
+                      />
+                    </nav>
 
-                    <div className="grid items-stretch gap-8 md:grid-cols-2 xl:grid-cols-4">
-                      <Link href="/filings?status=OVERDUE" className="block xl:scale-[1.04]">
-                        <StatCard
-                          label="OVERDUE"
-                          value={String(overdueCount)}
-                          sub="Fix now"
-                          icon={<AlertTriangle size={19} />}
-                          accent="red"
-                        />
-                      </Link>
-
-                      <Link href="/filings?status=DUE%20SOON" className="block transition-all duration-200 hover:shadow-[0_12px_30px_rgba(2,6,23,0.22)]">
-                        <StatCard
-                          label="DUE SOON"
-                          value={String(dueSoonCount)}
-                          sub="Within 7 days"
-                          icon={<Calendar size={19} />}
-                          accent="yellow"
-                        />
-                      </Link>
-
-                      <Link href="/filings?status=READY%20TO%20FILE" className="block transition-all duration-200 hover:shadow-[0_12px_30px_rgba(2,6,23,0.22)]">
-                        <StatCard
-                          label="READY"
-                          value={String(readyCount)}
-                          sub="Ready to file"
-                          icon={<CheckCircle2 size={19} />}
-                          accent="green"
-                        />
-                      </Link>
-
-                      <Link href="/filings?status=UPCOMING" className="block transition-all duration-200 hover:shadow-[0_12px_30px_rgba(2,6,23,0.22)]">
-                        <StatCard
-                          label="UPCOMING"
-                          value={String(upcomingCount)}
-                          sub="Not urgent yet"
-                          icon={<ArrowRight size={19} />}
-                          accent="blue"
-                        />
-                      </Link>
-                    </div>
-
-                    {!loading && filings.length > 0 && (
-                      <div className="mt-8 grid gap-4 md:grid-cols-3">
-                        {smartInsights.map((insight) => (
-                          <SmartInsightCard
-                            key={insight.label}
-                            label={insight.label}
-                            value={insight.value}
-                            helper={insight.helper}
-                          />
-                        ))}
-                      </div>
-                    )}
-
-                    {!loading && filings.length > 0 && (
-                      <div className="mt-8 overflow-hidden rounded-[28px] border border-cyan-400/10 bg-[linear-gradient(135deg,rgba(34,211,238,0.045),rgba(15,23,42,0.12),rgba(255,255,255,0.012))] shadow-[0_18px_44px_rgba(2,6,23,0.16)]">
-                        <div className="grid gap-6 p-6 lg:grid-cols-[minmax(0,1.35fr)_260px]">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-3">
-                              <div className="text-[11px] font-semibold tracking-[0.18em] text-cyan-200/75">
-                                COVERAGE CHECK
-                              </div>
-                              <div className="rounded-full border border-cyan-300/15 bg-cyan-400/8 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-cyan-100">
-                                SETUP CHECK
-                              </div>
-                            </div>
-
-                            <div className="mt-4 text-2xl font-semibold tracking-tight text-white sm:text-[2rem]">
-                              {filingCoverageSummary.entitiesWithoutFilings > 0
-                                ? `${filingCoverageSummary.entitiesWithoutFilings} ${filingCoverageSummary.entitiesWithoutFilings === 1 ? "entity may be missing expected filings" : "entities may be missing expected filings"}`
-                                : "Filing coverage looks complete"}
-                            </div>
-
-                            <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-300">
-                              {filingCoverageSummary.message} Confirm the setup from the filings page before treating this as final.
-                            </p>
-
-                            <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-slate-300">
-                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5">
-                                {filingCoverageSummary.entitiesWithFilings} entities with filings
-                              </span>
-                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5">
-                                {filingCoverageSummary.entitiesWithoutFilings} entities without visible filings
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-                            <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
-                              NEXT STEP
-                            </div>
-
-                            <div className="mt-4 space-y-3">
-                              <PriorityMiniStat
-                                label="Coverage Status"
-                                value={
-                                  filingCoverageSummary.entitiesWithoutFilings > 0
-                                    ? "Needs review"
-                                    : "Looks healthy"
-                                }
-                              />
-                              <PriorityMiniStat
-                                label="Entities Tracked"
-                                value={`${filingCoverageSummary.entitiesWithFilings}/${workspaceSummary.entityCount || 0} tracked`}
-                              />
-                            </div>
-
-                            <div className="mt-5 flex flex-col gap-3">
-                              <Link
-                                href={missingFilingsHref}
-                                className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_20px_rgba(34,211,238,0.12)] transition-all duration-150 hover:scale-[1.02] hover:from-cyan-300 hover:to-blue-400 active:scale-[0.98]"
-                              >
-                                Review Gaps
-                              </Link>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {loading && <DashboardSkeleton />}
-
-                    {!loading && topPriority && topCardStyle && (
-                      <div className={`relative mt-10 overflow-hidden rounded-[32px] shadow-[0_18px_54px_rgba(2,6,23,0.2)] ${topCardStyle.wrapper}`}>
-                        {topPriority.bucket !== "FILED" && (
-                          <>
-                            <div className="pointer-events-none absolute inset-0">
-                              <div
-                                className={`absolute inset-0 rounded-[32px] blur-3xl ${
-                                  topPriority.bucket === "OVERDUE"
-                                    ? "bg-red-500/12"
-                                    : topPriority.bucket === "DUE SOON"
-                                    ? "bg-yellow-400/10"
-                                    : "bg-cyan-400/7"
-                                }`}
-                                
-                              />
-                            </div>
-
-                            <div className="pointer-events-none absolute inset-x-0 top-0 h-[2px] overflow-hidden rounded-t-[32px]">
-                              <div
-                                className={`h-full w-[36%] ${
-                                  topPriority.bucket === "OVERDUE"
-                                    ? "bg-red-400"
-                                    : topPriority.bucket === "DUE SOON"
-                                    ? "bg-yellow-300"
-                                    : "bg-cyan-400"
-                                }`}
-                                
-                              />
-                            </div>
-                          </>
-                        )}
-
-                        <div className="relative grid gap-8 p-8 lg:grid-cols-[minmax(0,1.45fr)_340px] lg:p-9">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-3">
+                    {!isSidebarCollapsed && (
+                      <div className="mt-8 overflow-hidden rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(12,21,37,0.84),rgba(7,14,27,0.72))] shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_18px_40px_rgba(2,6,23,0.28)]">
+                        <div className="border-b border-white/10 bg-[linear-gradient(90deg,rgba(34,211,238,0.12),rgba(255,255,255,0))] px-4 py-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
                               <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
-                                HIGHEST PRIORITY FILING
+                                WORKSPACE
                               </div>
-                              <div className="rounded-full border border-yellow-300/20 bg-yellow-400/10 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-yellow-300">
-                                DO THIS NEXT
+                              <div className="mt-2 text-sm font-semibold text-white">
+                                {workspaceSummary.workspaceName ||
+                                  "Your Workspace"}
                               </div>
-                              {topPriorityRisk && (
-                                <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-semibold tracking-[0.14em] ${topPriorityRisk.pillClass}`}>
-                                  <span
-                                    className={`h-2 w-2 rounded-full ${topPriorityRisk.dotClass}`}
-                                   
-                                  />
-                                  {topPriorityRisk.label.toUpperCase()} RISK • {topPriorityRisk.score}/100
-                                </div>
-                              )}
+                              <div className="mt-1 text-xs text-slate-400">
+                                {formattedPlan} Plan •{" "}
+                                {workspaceSummary.workspaceType ===
+                                "accounting_firm"
+                                  ? "Accounting firm"
+                                  : workspaceSummary.workspaceType ===
+                                      "business_owner"
+                                    ? "Business"
+                                    : "Workspace"}
+                              </div>
                             </div>
+                            <div
+                              className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${workspaceHealth.pillClass}`}
+                            >
+                              <span
+                                className={`h-1.5 w-1.5 rounded-full ${workspaceHealth.dotClass}`}
+                              />
+                              Synced
+                            </div>
+                          </div>
 
-                            <div className="mt-5 flex items-start gap-4">
+                          <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <div className="text-xs font-semibold text-white">
+                                  {workspaceHealth.title}
+                                </div>
+                                <div className="mt-1 text-[11px] leading-5 text-slate-400">
+                                  {workspaceHealth.detail}
+                                </div>
+                              </div>
                               <div
-                                className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border text-2xl ${topCardStyle.iconWrap}`}
-                                
+                                className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${workspaceHealth.pillClass}`}
                               >
-                                {topPriority.bucket === "OVERDUE"
-                                  ? "⚠"
-                                  : topPriority.bucket === "DUE SOON"
-                                  ? "◔"
-                                  : topPriority.bucket === "READY TO FILE"
-                                  ? "✓"
-                                  : "→"}
+                                {attentionCount === 0
+                                  ? "Clear"
+                                  : `${attentionCount} active`}
                               </div>
+                            </div>
+                          </div>
+                        </div>
 
+                        <div className="space-y-3 p-4">
+                          {workspaceSummaryCards.map((item) => (
+                            <div
+                              key={item.label}
+                              className="flex items-center justify-between rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0.02))] px-3 py-3"
+                            >
                               <div className="min-w-0">
-                                <div className="text-3xl font-semibold tracking-tight text-white sm:text-[2.35rem]">
-                                  {topPriority.title}
+                                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+                                  {item.label}
                                 </div>
-                                <div className="mt-2 text-sm text-slate-400 sm:text-base">{topPriority.company}</div>
-
-                                <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
-                                  <span className={`inline-flex items-center gap-2 ${topPriority.subtitleClass}`}>
-                                    <span>📅 {topPriority.subtitle}</span>
-                                    {topPriority.bucket !== "FILED" && (
-                                      <span
-                                        className={`h-1.5 w-1.5 rounded-full ${
-                                          topPriority.bucket === "OVERDUE"
-                                            ? "bg-red-400"
-                                            : topPriority.bucket === "DUE SOON"
-                                            ? "bg-yellow-300"
-                                            : "bg-cyan-300"
-                                        }`}
-                                       
-                                      />
-                                    )}
-                                  </span>
-                                  <span className="text-slate-500">•</span>
-                                  <span className="text-slate-300">
-                                    {topPriority.bucket === "OVERDUE"
-                                      ? "Penalty risk is highest here"
-                                      : topPriority.bucket === "DUE SOON"
-                                      ? "Best next action on the board"
-                                      : topPriority.bucket === "READY TO FILE"
-                                      ? "Ready to submit"
-                                      : "Coming up next"}
-                                  </span>
+                                <div className="mt-1 truncate text-[11px] text-slate-400">
+                                  {item.helper}
                                 </div>
-
-                                <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-300">
-                                  This is the next filing to clear. Handle this first, then come back to the queue below.
-                                </p>
-
-                                {topPriorityRisk && (
-                                  <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-slate-300">
-                                    <span className={`h-2 w-2 rounded-full ${topPriorityRisk.dotClass}`} />
-                                    {topPriorityRisk.detail}
-                                  </div>
-                                )}
+                              </div>
+                              <div className="ml-4 text-base font-semibold text-white">
+                                {item.value}
                               </div>
                             </div>
-                          </div>
-
-                          <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-                            <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
-                              ACTION SNAPSHOT
-                            </div>
-
-                            <div className="mt-4 grid gap-3">
-                              <PriorityMiniStat label="Status" value={topPriority.bucket} />
-                              <PriorityMiniStat label="Risk" value={topPriorityRisk ? `${topPriorityRisk.score} • ${topPriorityRisk.label}` : "—"} />
-                              <PriorityMiniStat label="Timeline" value={topPriority.subtitle} />
-                              <PriorityMiniStat label="Why it matters" value={topPriorityRisk ? topPriorityRisk.detail : "No active risk"} />
-                            </div>
-
-                            <div className="mt-5 flex flex-col gap-3">
-                              <Link
-                                href="/filings"
-                                className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 hover:bg-white/10"
-                              >
-                                Open Filing Queue
-                              </Link>
-                              <button
-                                type="button"
-                                onClick={() => handlePrimaryAction(topPriority)}
-                                className="rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.22)] transition-all duration-150 hover:scale-[1.02] hover:from-cyan-300 hover:to-blue-400 active:scale-[0.98]"
-                              >
-                                {topPriority.primaryAction} →
-                              </button>
-                            </div>
-                          </div>
+                          ))}
                         </div>
                       </div>
                     )}
+                  </div>
 
-                    {!loading && !topPriority && (
-                      <div className="mt-10 rounded-3xl border border-white/10 bg-white/[0.03] px-5 py-8">
-                        <div className="text-lg font-semibold text-white">No filings yet</div>
-                        <div className="mt-2 text-sm text-slate-400">
-                          Finish setup, add your first filing, or seed starter compliance work to bring this dashboard to life.
+                  <div
+                    className={`${isSidebarCollapsed ? "p-3" : "p-4"} border-t border-white/10`}
+                  >
+                    {!isSidebarCollapsed ? (
+                      <div className="overflow-hidden rounded-[24px] border border-cyan-400/12 bg-[linear-gradient(145deg,rgba(15,23,42,0.86),rgba(5,11,22,0.94))] shadow-[0_18px_42px_rgba(2,6,23,0.34)]">
+                        <div className="border-b border-white/10 bg-[linear-gradient(90deg,rgba(34,211,238,0.16),rgba(59,130,246,0.06),rgba(255,255,255,0))] px-4 py-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-200/80">
+                                Next step
+                              </div>
+                              <div className="mt-1 text-sm font-semibold text-white">
+                                Open filing queue
+                              </div>
+                            </div>
+                            <div
+                              className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] ${workspaceHealth.pillClass}`}
+                            >
+                              {attentionCount === 0 ? "Stable" : "Review"}
+                            </div>
+                          </div>
                         </div>
-                        <div className="mt-5 flex flex-wrap gap-3">
+
+                        <div className="p-4">
+                          <div className="text-xs leading-5 text-slate-300">
+                            {attentionCount === 0
+                              ? "Everything urgent is under control. Use the workspace to monitor what is coming next."
+                              : `${attentionCount} filing${attentionCount === 1 ? "" : "s"} require action. Open the workspace to clear the queue in order.`}
+                          </div>
                           <Link
                             href="/filings"
-                            className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.18)] transition hover:from-cyan-300 hover:to-blue-400"
+                            className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[linear-gradient(135deg,rgba(34,211,238,0.96),rgba(59,130,246,0.92))] px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_12px_30px_rgba(34,211,238,0.24)] transition-all duration-200 hover:-translate-y-[1px] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_18px_34px_rgba(34,211,238,0.3)]"
                           >
-                            Add First Filing
-                          </Link>
-                          <Link
-                            href={complianceSetupHref}
-                            className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
-                          >
-                            Run Compliance Setup
+                            Open Filing Queue
+                            <ArrowRight size={16} />
                           </Link>
                         </div>
                       </div>
+                    ) : (
+                      <Link
+                        href="/filings"
+                        className="flex h-12 w-full items-center justify-center rounded-2xl border border-cyan-300/20 bg-cyan-400/7 text-cyan-200 transition hover:bg-cyan-400/15"
+                        title="Open Filing Queue"
+                      >
+                        <ArrowRight size={18} />
+                      </Link>
                     )}
+                  </div>
+                </aside>
 
-                    <div className="mt-10 space-y-8">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="text-sm font-semibold text-white">Your Filing Queue</div>
-                          <div className="mt-1 text-sm text-slate-400">
-                            Work these in order: overdue, due soon, then ready to file.
+                <div className="min-w-0">
+                  <div className="border-b border-white/10 px-4 py-4 sm:px-6">
+                    <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-4 lg:hidden">
+                          <div className="relative flex items-center justify-center">
+                            <div className="absolute inset-0 rounded-xl bg-cyan-400/8 blur-xl" />
+                            <Image
+                              src="/logo-final.png"
+                              alt="Due Horizon"
+                              width={32}
+                              height={32}
+                              className="relative drop-shadow-[0_0_12px_rgba(34,211,238,0.28)]"
+                            />
+                          </div>
+                          <div>
+                            <div className="text-lg font-semibold tracking-tight">
+                              Due Horizon
+                            </div>
+                            <div className="text-xs text-slate-400">
+                              Compliance OS
+                            </div>
                           </div>
                         </div>
+
+                        <div className="hidden lg:block">
+                          <div className="text-xs font-semibold tracking-[0.18em] text-cyan-300/80">
+                            DASHBOARD
+                          </div>
+                          <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
+                            Start here —{" "}
+                            <span className="text-cyan-300">
+                              {attentionCount}
+                            </span>{" "}
+                            {attentionCount === 1
+                              ? "filing needs attention"
+                              : "filings need attention"}
+                          </h1>
+                          <p className="mt-2 text-slate-400">
+                            Clear the highest-risk item first, then work down
+                            the queue.
+                          </p>
+                          <div className="mt-2 text-sm text-slate-500">
+                            {overdueCount} at risk • {dueSoonCount} due next •{" "}
+                            {readyCount} ready to file
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3 self-start xl:self-auto">
+                        {canManageTeam && (
+                          <Link
+                            href="/team"
+                            className="hidden sm:inline-flex items-center gap-2 rounded-xl border border-cyan-300/20 bg-cyan-400/7 px-4 py-2 text-sm text-cyan-100 transition hover:bg-cyan-400/15"
+                          >
+                            <UserPlus size={16} />
+                            Invite
+                          </Link>
+                        )}
+
                         <Link
                           href="/filings"
                           className="hidden sm:inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
                         >
-                          Open Full Filings →
+                          View filings →
+                        </Link>
+                        <Link
+                          href="/portal/dashboard"
+                          className="hidden sm:inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
+                        >
+                          Client portal →
+                        </Link>
+
+                        <div className="relative" ref={alertsRef}>
+                          <button
+                            type="button"
+                            onClick={() => setIsAlertsOpen((prev) => !prev)}
+                            className={`relative flex h-10 w-10 items-center justify-center rounded-xl border text-sm text-slate-200 transition ${
+                              isAlertsOpen
+                                ? "border-cyan-300/40 bg-white/10 shadow-[0_0_18px_rgba(34,211,238,0.14)]"
+                                : "border-white/10 bg-white/5 hover:bg-white/10"
+                            }`}
+                          >
+                            <Bell size={18} className="text-slate-300" />
+
+                            {alerts.length > 0 && (
+                              <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-white/10 bg-slate-700 px-1 text-[9px] font-semibold text-white">
+                                {alerts.length}
+                              </span>
+                            )}
+                          </button>
+
+                          {isAlertsOpen && (
+                            <div className="absolute right-0 top-full z-50 mt-3 w-80 overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(to_bottom,rgba(12,21,37,0.98),rgba(8,15,28,0.98))] shadow-[0_24px_70px_rgba(0,0,0,0.5)] backdrop-blur-xl">
+                              <div className="flex items-center justify-between border-b border-white/10 px-4 py-4">
+                                <div>
+                                  <div className="text-sm font-semibold text-white">
+                                    Alerts
+                                  </div>
+                                  <div className="mt-1 text-xs text-slate-400">
+                                    {alerts.length} items need attention
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={handleMarkAllAlertsRead}
+                                  className="text-xs text-cyan-300 hover:text-cyan-200"
+                                >
+                                  Mark all read
+                                </button>
+                              </div>
+
+                              <div className="py-2">
+                                {alerts.length > 0 ? (
+                                  alerts.map((alert, index) => (
+                                    <AlertItem
+                                      key={`${alert.title}-${index}`}
+                                      title={alert.title}
+                                      subtitle={alert.subtitle}
+                                      tone={alert.tone}
+                                    />
+                                  ))
+                                ) : (
+                                  <div className="px-4 py-6 text-sm text-slate-400">
+                                    No active alerts right now.
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="border-t border-white/10 p-3">
+                                <Link
+                                  href="/filings"
+                                  className="block rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center text-sm text-slate-200 hover:bg-white/10"
+                                >
+                                  View all alerts
+                                </Link>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="relative" ref={profileRef}>
+                          <button
+                            type="button"
+                            onClick={() => setIsProfileOpen((prev) => !prev)}
+                            className={`flex items-center gap-3 rounded-xl border px-3 py-2 transition hover:scale-[1.02] ${
+                              isProfileOpen
+                                ? "border-cyan-300/40 bg-white/10 shadow-[0_0_18px_rgba(34,211,238,0.14)]"
+                                : "border-white/10 bg-white/5 hover:bg-white/10"
+                            }`}
+                          >
+                            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 text-xs font-semibold text-slate-950">
+                              {userInitials}
+                            </div>
+                            <div className="hidden text-left leading-tight sm:block">
+                              <div className="text-sm font-semibold">
+                                {userDisplayName || "Account"}
+                              </div>
+                              <div className="text-xs text-slate-400">
+                                {workspaceSummary.workspaceName ||
+                                  "Your Workspace"}
+                              </div>
+                            </div>
+                            <div
+                              className={`text-xs text-slate-400 transition ${isProfileOpen ? "rotate-180" : ""}`}
+                            >
+                              ⌄
+                            </div>
+                          </button>
+
+                          {isProfileOpen && (
+                            <div className="absolute right-0 top-full z-50 mt-3 w-72 overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(to_bottom,rgba(12,21,37,0.98),rgba(8,15,28,0.98))] shadow-[0_24px_70px_rgba(0,0,0,0.5)] backdrop-blur-xl">
+                              <div className="border-b border-white/10 px-4 py-4">
+                                <div className="flex items-center gap-3">
+                                  <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 text-sm font-semibold text-slate-950">
+                                    {userInitials}
+                                  </div>
+                                  <div>
+                                    <div className="text-sm font-semibold text-white">
+                                      {userDisplayName || "Account"}
+                                    </div>
+                                    <div className="mt-1 text-xs text-slate-400">
+                                      {workspaceSummary.workspaceName ||
+                                        "Your Workspace"}{" "}
+                                      •{" "}
+                                      {memberRole !== "unknown"
+                                        ? memberRole
+                                        : "owner"}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="py-2">
+                                {canManageTeam && (
+                                  <DropdownItem
+                                    href="/team"
+                                    label="Team"
+                                    icon={<Users size={15} />}
+                                  />
+                                )}
+                                <DropdownItem
+                                  href="/settings"
+                                  label="Account Settings"
+                                  icon={<Settings size={15} />}
+                                />
+                              </div>
+
+                              <div className="mx-3 h-px bg-white/10" />
+
+                              <div className="py-2">
+                                <DropdownItem
+                                  href="/support"
+                                  label="Help & Support"
+                                  icon={<LifeBuoy size={15} />}
+                                />
+                                <DropdownItem
+                                  href="/logout"
+                                  label="Logout"
+                                  icon={<LogOut size={15} />}
+                                  danger
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex gap-2 overflow-x-auto pb-1 lg:hidden">
+                      <MobileNavPill
+                        href="/dashboard"
+                        label="Dashboard"
+                        pathname={pathname}
+                      />
+                      <MobileNavPill
+                        href="/filings"
+                        label="Filings"
+                        pathname={pathname}
+                      />
+                      <MobileNavPill
+                        href="/portal/dashboard"
+                        label="Client Portal"
+                        pathname={pathname}
+                      />
+                      <MobileNavPill
+                        href="/calendar"
+                        label="Calendar"
+                        pathname={pathname}
+                      />
+                      <MobileNavPill
+                        href="/reports"
+                        label="Reports"
+                        pathname={pathname}
+                      />
+                      {canManageTeam && (
+                        <MobileNavPill
+                          href="/team"
+                          label="Team"
+                          pathname={pathname}
+                        />
+                      )}
+                      <MobileNavPill
+                        href="/settings"
+                        label="Settings"
+                        pathname={pathname}
+                      />
+                    </div>
+
+                    <div className="mt-4 lg:hidden">
+                      <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+                        Start here —{" "}
+                        <span className="text-cyan-300">{attentionCount}</span>{" "}
+                        {attentionCount === 1
+                          ? "filing needs attention"
+                          : "filings need attention"}
+                      </h1>
+                      <p className="mt-2 text-slate-400">
+                        Clear the highest-risk item first, then work down the
+                        queue.
+                      </p>
+                      <div className="mt-2 text-sm text-slate-500">
+                        {overdueCount} at risk • {dueSoonCount} due next •{" "}
+                        {readyCount} ready to file
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="overflow-visible px-4 py-6 sm:px-6 sm:py-8">
+                    <div className="mx-auto max-w-[1240px]">
+                      <div className="mb-5 flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.18em] text-slate-500">
+                        <span>Plan</span>
+                        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-slate-300">
+                          {formattedPlan}
+                        </span>
+                        {canManageTeam && (
+                          <span className="rounded-full border border-cyan-300/15 bg-cyan-400/7 px-2 py-1 text-cyan-200">
+                            {memberRole}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="grid items-stretch gap-8 md:grid-cols-2 xl:grid-cols-4">
+                        <Link
+                          href="/filings?status=OVERDUE"
+                          className="block xl:scale-[1.04]"
+                        >
+                          <StatCard
+                            label="OVERDUE"
+                            value={String(overdueCount)}
+                            sub="Fix now"
+                            icon={<AlertTriangle size={19} />}
+                            accent="red"
+                          />
+                        </Link>
+
+                        <Link
+                          href="/filings?status=DUE%20SOON"
+                          className="block transition-all duration-200 hover:shadow-[0_12px_30px_rgba(2,6,23,0.22)]"
+                        >
+                          <StatCard
+                            label="DUE SOON"
+                            value={String(dueSoonCount)}
+                            sub="Within 7 days"
+                            icon={<Calendar size={19} />}
+                            accent="yellow"
+                          />
+                        </Link>
+
+                        <Link
+                          href="/filings?status=READY%20TO%20FILE"
+                          className="block transition-all duration-200 hover:shadow-[0_12px_30px_rgba(2,6,23,0.22)]"
+                        >
+                          <StatCard
+                            label="READY"
+                            value={String(readyCount)}
+                            sub="Ready to file"
+                            icon={<CheckCircle2 size={19} />}
+                            accent="green"
+                          />
+                        </Link>
+
+                        <Link
+                          href="/filings?status=UPCOMING"
+                          className="block transition-all duration-200 hover:shadow-[0_12px_30px_rgba(2,6,23,0.22)]"
+                        >
+                          <StatCard
+                            label="UPCOMING"
+                            value={String(upcomingCount)}
+                            sub="Not urgent yet"
+                            icon={<ArrowRight size={19} />}
+                            accent="blue"
+                          />
                         </Link>
                       </div>
 
-                      {prioritizedActionItems.length === 0 ? (
-                        <div className="rounded-3xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(6,78,59,0.12),rgba(4,47,46,0.06),rgba(255,255,255,0.02))] px-6 py-6 shadow-[0_20px_60px_rgba(6,78,59,0.12)]">
-                          <div className="flex items-start gap-4">
-                            <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-emerald-400/20 bg-emerald-500/15 text-emerald-300">
-                              <CheckCircle2 size={20} />
-                            </div>
+                      {!loading && filings.length > 0 && (
+                        <div className="mt-8 grid gap-4 md:grid-cols-3">
+                          {smartInsights.map((insight) => (
+                            <SmartInsightCard
+                              key={insight.label}
+                              label={insight.label}
+                              value={insight.value}
+                              helper={insight.helper}
+                            />
+                          ))}
+                        </div>
+                      )}
+
+                      {!loading && filings.length > 0 && (
+                        <div className="mt-8 overflow-hidden rounded-[28px] border border-cyan-400/10 bg-[linear-gradient(135deg,rgba(34,211,238,0.045),rgba(15,23,42,0.12),rgba(255,255,255,0.012))] shadow-[0_18px_44px_rgba(2,6,23,0.16)]">
+                          <div className="grid gap-6 p-6 lg:grid-cols-[minmax(0,1.35fr)_260px]">
                             <div>
-                              <div className="text-lg font-semibold text-white">All clear</div>
-                              <div className="mt-2 max-w-2xl text-sm leading-7 text-slate-300">
-                                Everything urgent is under control right now. Upcoming deadlines stay quiet until they need action.
+                              <div className="flex flex-wrap items-center gap-3">
+                                <div className="text-[11px] font-semibold tracking-[0.18em] text-cyan-200/75">
+                                  COVERAGE CHECK
+                                </div>
+                                <div className="rounded-full border border-cyan-300/15 bg-cyan-400/8 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-cyan-100">
+                                  SETUP CHECK
+                                </div>
+                              </div>
+
+                              <div className="mt-4 text-2xl font-semibold tracking-tight text-white sm:text-[2rem]">
+                                {filingCoverageSummary.entitiesWithoutFilings >
+                                0
+                                  ? `${filingCoverageSummary.entitiesWithoutFilings} ${filingCoverageSummary.entitiesWithoutFilings === 1 ? "entity may be missing expected filings" : "entities may be missing expected filings"}`
+                                  : "Filing coverage looks complete"}
+                              </div>
+
+                              <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-300">
+                                {filingCoverageSummary.message} Confirm the
+                                setup from the filings page before treating this
+                                as final.
+                              </p>
+
+                              <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-slate-300">
+                                <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5">
+                                  {filingCoverageSummary.entitiesWithFilings}{" "}
+                                  entities with filings
+                                </span>
+                                <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5">
+                                  {filingCoverageSummary.entitiesWithoutFilings}{" "}
+                                  entities without visible filings
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                              <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
+                                NEXT STEP
+                              </div>
+
+                              <div className="mt-4 space-y-3">
+                                <PriorityMiniStat
+                                  label="Coverage Status"
+                                  value={
+                                    filingCoverageSummary.entitiesWithoutFilings >
+                                    0
+                                      ? "Needs review"
+                                      : "Looks healthy"
+                                  }
+                                />
+                                <PriorityMiniStat
+                                  label="Entities Tracked"
+                                  value={`${filingCoverageSummary.entitiesWithFilings}/${workspaceSummary.entityCount || 0} tracked`}
+                                />
+                              </div>
+
+                              <div className="mt-5 flex flex-col gap-3">
+                                <Link
+                                  href={missingFilingsHref}
+                                  className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_20px_rgba(34,211,238,0.12)] transition-all duration-150 hover:scale-[1.02] hover:from-cyan-300 hover:to-blue-400 active:scale-[0.98]"
+                                >
+                                  Review Gaps
+                                </Link>
                               </div>
                             </div>
                           </div>
                         </div>
-                      ) : (
-                        <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03]">
-                          <div className="border-b border-white/10 px-5 py-4">
-                            <div className="flex items-center justify-between gap-4">
-                              <div>
-                                <div className="text-sm font-semibold text-white">Prioritized queue</div>
-                                <div className="mt-1 text-sm text-slate-400">
-                                  Sorted by highest consequence and nearest deadline.
+                      )}
+
+                      {loading && <DashboardSkeleton />}
+
+                      {!loading && topPriority && topCardStyle && (
+                        <div
+                          className={`relative mt-10 overflow-hidden rounded-[32px] shadow-[0_18px_54px_rgba(2,6,23,0.2)] ${topCardStyle.wrapper}`}
+                        >
+                          {topPriority.bucket !== "FILED" && (
+                            <>
+                              <div className="pointer-events-none absolute inset-0">
+                                <div
+                                  className={`absolute inset-0 rounded-[32px] blur-3xl ${
+                                    topPriority.bucket === "OVERDUE"
+                                      ? "bg-red-500/12"
+                                      : topPriority.bucket === "DUE SOON"
+                                        ? "bg-yellow-400/10"
+                                        : "bg-cyan-400/7"
+                                  }`}
+                                />
+                              </div>
+
+                              <div className="pointer-events-none absolute inset-x-0 top-0 h-[2px] overflow-hidden rounded-t-[32px]">
+                                <div
+                                  className={`h-full w-[36%] ${
+                                    topPriority.bucket === "OVERDUE"
+                                      ? "bg-red-400"
+                                      : topPriority.bucket === "DUE SOON"
+                                        ? "bg-yellow-300"
+                                        : "bg-cyan-400"
+                                  }`}
+                                />
+                              </div>
+                            </>
+                          )}
+
+                          <div className="relative grid gap-8 p-8 lg:grid-cols-[minmax(0,1.45fr)_340px] lg:p-9">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-3">
+                                <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
+                                  HIGHEST PRIORITY FILING
+                                </div>
+                                <div className="rounded-full border border-yellow-300/20 bg-yellow-400/10 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-yellow-300">
+                                  DO THIS NEXT
+                                </div>
+                                {topPriorityRisk && (
+                                  <div
+                                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-semibold tracking-[0.14em] ${topPriorityRisk.pillClass}`}
+                                  >
+                                    <span
+                                      className={`h-2 w-2 rounded-full ${topPriorityRisk.dotClass}`}
+                                    />
+                                    {topPriorityRisk.label.toUpperCase()} RISK •{" "}
+                                    {topPriorityRisk.score}/100
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="mt-5 flex items-start gap-4">
+                                <div
+                                  className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border text-2xl ${topCardStyle.iconWrap}`}
+                                >
+                                  {topPriority.bucket === "OVERDUE"
+                                    ? "⚠"
+                                    : topPriority.bucket === "DUE SOON"
+                                      ? "◔"
+                                      : topPriority.bucket === "READY TO FILE"
+                                        ? "✓"
+                                        : "→"}
+                                </div>
+
+                                <div className="min-w-0">
+                                  <div className="text-3xl font-semibold tracking-tight text-white sm:text-[2.35rem]">
+                                    {topPriority.title}
+                                  </div>
+                                  <div className="mt-2 text-sm text-slate-400 sm:text-base">
+                                    {topPriority.company}
+                                  </div>
+
+                                  <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
+                                    <span
+                                      className={`inline-flex items-center gap-2 ${topPriority.subtitleClass}`}
+                                    >
+                                      <span>📅 {topPriority.subtitle}</span>
+                                      {topPriority.bucket !== "FILED" && (
+                                        <span
+                                          className={`h-1.5 w-1.5 rounded-full ${
+                                            topPriority.bucket === "OVERDUE"
+                                              ? "bg-red-400"
+                                              : topPriority.bucket ===
+                                                  "DUE SOON"
+                                                ? "bg-yellow-300"
+                                                : "bg-cyan-300"
+                                          }`}
+                                        />
+                                      )}
+                                    </span>
+                                    <span className="text-slate-500">•</span>
+                                    <span className="text-slate-300">
+                                      {topPriority.bucket === "OVERDUE"
+                                        ? "Penalty risk is highest here"
+                                        : topPriority.bucket === "DUE SOON"
+                                          ? "Best next action on the board"
+                                          : topPriority.bucket ===
+                                              "READY TO FILE"
+                                            ? "Ready to submit"
+                                            : "Coming up next"}
+                                    </span>
+                                  </div>
+
+                                  <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-300">
+                                    This is the next filing to clear. Handle
+                                    this first, then come back to the queue
+                                    below.
+                                  </p>
+
+                                  {topPriorityRisk && (
+                                    <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-slate-300">
+                                      <span
+                                        className={`h-2 w-2 rounded-full ${topPriorityRisk.dotClass}`}
+                                      />
+                                      {topPriorityRisk.detail}
+                                    </div>
+                                  )}
                                 </div>
                               </div>
-                              <div className="rounded-full border border-cyan-300/15 bg-cyan-400/7 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-cyan-200">
-                                {prioritizedActionItems.length} SHOWN
+                            </div>
+
+                            <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                              <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-500">
+                                ACTION SNAPSHOT
+                              </div>
+
+                              <div className="mt-4 grid gap-3">
+                                <PriorityMiniStat
+                                  label="Status"
+                                  value={topPriority.bucket}
+                                />
+                                <PriorityMiniStat
+                                  label="Risk"
+                                  value={
+                                    topPriorityRisk
+                                      ? `${topPriorityRisk.score} • ${topPriorityRisk.label}`
+                                      : "—"
+                                  }
+                                />
+                                <PriorityMiniStat
+                                  label="Timeline"
+                                  value={topPriority.subtitle}
+                                />
+                                <PriorityMiniStat
+                                  label="Why it matters"
+                                  value={
+                                    topPriorityRisk
+                                      ? topPriorityRisk.detail
+                                      : "No active risk"
+                                  }
+                                />
+                              </div>
+
+                              <div className="mt-5 flex flex-col gap-3">
+                                <Link
+                                  href="/filings"
+                                  className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 hover:bg-white/10"
+                                >
+                                  Open Filing Queue
+                                </Link>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handlePrimaryAction(topPriority)
+                                  }
+                                  className="rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.22)] transition-all duration-150 hover:scale-[1.02] hover:from-cyan-300 hover:to-blue-400 active:scale-[0.98]"
+                                >
+                                  {topPriority.primaryAction} →
+                                </button>
                               </div>
                             </div>
                           </div>
+                        </div>
+                      )}
 
-                          <div className="divide-y divide-white/5">
-                            {prioritizedActionItems.map((row) => (
+                      {!loading && !topPriority && (
+                        <div className="mt-10 rounded-3xl border border-white/10 bg-white/[0.03] px-5 py-8">
+                          <div className="text-lg font-semibold text-white">
+                            No filings yet
+                          </div>
+                          <div className="mt-2 text-sm text-slate-400">
+                            Finish setup, add your first filing, or seed starter
+                            compliance work to bring this dashboard to life.
+                          </div>
+                          <div className="mt-5 flex flex-wrap gap-3">
+                            <Link
+                              href="/filings"
+                              className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-[0_0_24px_rgba(34,211,238,0.18)] transition hover:from-cyan-300 hover:to-blue-400"
+                            >
+                              Add First Filing
+                            </Link>
+                            <Link
+                              href={complianceSetupHref}
+                              className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-slate-200 transition hover:bg-white/10"
+                            >
+                              Run Compliance Setup
+                            </Link>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="mt-10 space-y-8">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-white">
+                              Your Filing Queue
+                            </div>
+                            <div className="mt-1 text-sm text-slate-400">
+                              Work these in order: overdue, due soon, then ready
+                              to file.
+                            </div>
+                          </div>
+                          <Link
+                            href="/filings"
+                            className="hidden sm:inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
+                          >
+                            Open Full Filings →
+                          </Link>
+                        </div>
+
+                        {prioritizedActionItems.length === 0 ? (
+                          <div className="rounded-3xl border border-emerald-400/15 bg-[linear-gradient(135deg,rgba(6,78,59,0.12),rgba(4,47,46,0.06),rgba(255,255,255,0.02))] px-6 py-6 shadow-[0_20px_60px_rgba(6,78,59,0.12)]">
+                            <div className="flex items-start gap-4">
+                              <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-emerald-400/20 bg-emerald-500/15 text-emerald-300">
+                                <CheckCircle2 size={20} />
+                              </div>
+                              <div>
+                                <div className="text-lg font-semibold text-white">
+                                  All clear
+                                </div>
+                                <div className="mt-2 max-w-2xl text-sm leading-7 text-slate-300">
+                                  Everything urgent is under control right now.
+                                  Upcoming deadlines stay quiet until they need
+                                  action.
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03]">
+                            <div className="border-b border-white/10 px-5 py-4">
+                              <div className="flex items-center justify-between gap-4">
+                                <div>
+                                  <div className="text-sm font-semibold text-white">
+                                    Prioritized queue
+                                  </div>
+                                  <div className="mt-1 text-sm text-slate-400">
+                                    Sorted by highest consequence and nearest
+                                    deadline.
+                                  </div>
+                                </div>
+                                <div className="rounded-full border border-cyan-300/15 bg-cyan-400/7 px-3 py-1 text-[11px] font-semibold tracking-[0.16em] text-cyan-200">
+                                  {prioritizedActionItems.length} SHOWN
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="divide-y divide-white/5">
+                              {prioritizedActionItems.map((row) => (
+                                <div
+                                  key={row.id}
+                                  className="group relative flex flex-col gap-4 px-5 py-4 transition-all duration-200 hover:bg-white/[0.04] lg:flex-row lg:items-center lg:justify-between"
+                                >
+                                  <div className="absolute left-0 top-0 h-full w-[2px] bg-cyan-400/40" />
+                                  <div className="flex min-w-0 items-start gap-4">
+                                    <div
+                                      className={`mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-sm font-semibold ${row.iconClass}`}
+                                    >
+                                      {row.icon}
+                                    </div>
+
+                                    <div className="min-w-0">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <BucketPill bucket={row.bucket} />
+                                        <div className="text-sm font-medium text-white sm:text-base">
+                                          {row.title}
+                                        </div>
+                                      </div>
+
+                                      <div className="mt-1 text-sm text-slate-400">
+                                        {row.company}
+                                      </div>
+                                      <div
+                                        className={`mt-2 text-sm ${row.subtitleClass}`}
+                                      >
+                                        {row.subtitle}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => handlePrimaryAction(row)}
+                                      className={`rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 hover:scale-[1.02] active:scale-[0.98] ${row.primaryClass}`}
+                                    >
+                                      {row.primaryAction}
+                                    </button>
+
+                                    <Link
+                                      href="/filings"
+                                      className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 transition-all duration-150 hover:scale-[1.02] hover:bg-white/10 active:scale-[0.98]"
+                                    >
+                                      View
+                                    </Link>
+
+                                    <RowActionMenu
+                                      rowId={row.id}
+                                      openMenuId={openMenuId}
+                                      setOpenMenuId={setOpenMenuId}
+                                    >
+                                      <button
+                                        type="button"
+                                        onClick={() => setOpenMenuId(null)}
+                                        className="block w-full px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/5"
+                                      >
+                                        View details
+                                      </button>
+
+                                      {row.bucket === "DUE SOON" && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            updateFilingStatus(
+                                              row.id,
+                                              "in_progress",
+                                            )
+                                          }
+                                          className="block w-full px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/5"
+                                        >
+                                          Mark as Ready
+                                        </button>
+                                      )}
+
+                                      {(row.bucket === "READY TO FILE" ||
+                                        row.bucket === "OVERDUE") && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            updateFilingStatus(row.id, "filed")
+                                          }
+                                          className="block w-full px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/5"
+                                        >
+                                          Mark as Filed
+                                        </button>
+                                      )}
+                                    </RowActionMenu>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {upcomingCount > 0 && (
+                          <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03]">
+                            <div className="flex flex-col gap-3 border-b border-white/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                              <div>
+                                <div className="text-sm font-semibold text-white">
+                                  Coming Up
+                                </div>
+                                <div className="mt-1 text-sm text-slate-400">
+                                  Not urgent yet. These move into the queue as
+                                  deadlines get closer.
+                                </div>
+                              </div>
+                              <Link
+                                href="/filings?status=UPCOMING"
+                                className="inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
+                              >
+                                View all upcoming →
+                              </Link>
+                            </div>
+
+                            <div className="divide-y divide-white/5">
+                              {filings
+                                .filter((f) => f.bucket === "UPCOMING")
+                                .slice(0, 3)
+                                .map((row) => (
+                                  <div
+                                    key={row.id}
+                                    className="group relative flex flex-col gap-4 px-5 py-4 transition-all duration-200 hover:bg-white/[0.04] lg:flex-row lg:items-center lg:justify-between"
+                                  >
+                                    <div className="flex items-start gap-4">
+                                      <div
+                                        className={`flex h-10 w-10 items-center justify-center rounded-xl text-sm font-semibold ${row.iconClass}`}
+                                      >
+                                        {row.icon}
+                                      </div>
+
+                                      <div>
+                                        <div className="text-sm font-medium text-white sm:text-base">
+                                          {row.title}{" "}
+                                          <span className="text-slate-400">
+                                            — {row.company}
+                                          </span>
+                                        </div>
+                                        <div
+                                          className={`mt-1 text-sm ${row.subtitleClass}`}
+                                        >
+                                          {row.subtitle}
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-2">
+                                      <Link
+                                        href="/filings"
+                                        className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 transition-all duration-150 hover:scale-[1.02] hover:bg-white/10 active:scale-[0.98]"
+                                      >
+                                        View
+                                      </Link>
+                                      <button
+                                        type="button"
+                                        onClick={() => handlePrimaryAction(row)}
+                                        className={`rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 hover:scale-[1.02] active:scale-[0.98] ${row.primaryClass}`}
+                                      >
+                                        {row.primaryAction}
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {filedFilings.length > 0 && (
+                        <div className="mt-10 overflow-visible rounded-3xl border border-white/10 bg-white/[0.02] opacity-80">
+                          <div className="border-b border-white/10 px-4 py-4 sm:px-5">
+                            <div className="text-sm font-semibold text-white">
+                              Completed ({Math.min(filedFilings.length, 5)})
+                            </div>
+                            <div className="mt-1 text-sm text-slate-400">
+                              Recently completed work
+                            </div>
+                          </div>
+
+                          <div className="overflow-visible">
+                            {filedFilings.slice(0, 5).map((row) => (
                               <div
                                 key={row.id}
-                                className="group relative flex flex-col gap-4 px-5 py-4 transition-all duration-200 hover:bg-white/[0.04] lg:flex-row lg:items-center lg:justify-between"
+                                className="relative flex flex-col gap-4 overflow-visible border-t border-white/5 px-4 py-4 sm:px-5 lg:flex-row lg:items-center lg:justify-between"
                               >
-                                <div className="absolute left-0 top-0 h-full w-[2px] bg-cyan-400/40" />
-                                <div className="flex min-w-0 items-start gap-4">
-                                  <div className={`mt-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-sm font-semibold ${row.iconClass}`}>
+                                <div className="flex items-start gap-4">
+                                  <div
+                                    className={`flex h-10 w-10 items-center justify-center rounded-xl text-sm font-semibold ${row.iconClass}`}
+                                  >
                                     {row.icon}
                                   </div>
 
-                                  <div className="min-w-0">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <BucketPill bucket={row.bucket} />
-                                      <div className="text-sm font-medium text-white sm:text-base">{row.title}</div>
+                                  <div>
+                                    <div className="text-sm font-medium text-white sm:text-base">
+                                      {row.title}{" "}
+                                      <span className="text-slate-400">
+                                        — {row.company}
+                                      </span>
                                     </div>
-
-                                    <div className="mt-1 text-sm text-slate-400">{row.company}</div>
-                                    <div className={`mt-2 text-sm ${row.subtitleClass}`}>{row.subtitle}</div>
+                                    <div
+                                      className={`mt-1 text-sm ${row.subtitleClass}`}
+                                    >
+                                      {row.subtitle}
+                                    </div>
                                   </div>
                                 </div>
 
-                                <div className="flex flex-wrap items-center gap-2">
+                                <div className="flex flex-wrap items-center gap-2 overflow-visible">
                                   <button
                                     type="button"
-                                    onClick={() => handlePrimaryAction(row)}
-                                    className={`rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 hover:scale-[1.02] active:scale-[0.98] ${row.primaryClass}`}
+                                    className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-300"
                                   >
-                                    {row.primaryAction}
+                                    Filed
                                   </button>
-
-                                  <Link
-                                    href="/filings"
-                                    className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 transition-all duration-150 hover:scale-[1.02] hover:bg-white/10 active:scale-[0.98]"
-                                  >
-                                    View
-                                  </Link>
 
                                   <RowActionMenu
                                     rowId={row.id}
@@ -1471,31 +2002,11 @@ export default function DashboardPage() {
                                   >
                                     <button
                                       type="button"
-                                      onClick={() => setOpenMenuId(null)}
+                                      onClick={() => markUnfiled(row.id)}
                                       className="block w-full px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/5"
                                     >
-                                      View details
+                                      Mark as Unfiled
                                     </button>
-
-                                    {row.bucket === "DUE SOON" && (
-                                      <button
-                                        type="button"
-                                        onClick={() => updateFilingStatus(row.id, "in_progress")}
-                                        className="block w-full px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/5"
-                                      >
-                                        Mark as Ready
-                                      </button>
-                                    )}
-
-                                    {(row.bucket === "READY TO FILE" || row.bucket === "OVERDUE") && (
-                                      <button
-                                        type="button"
-                                        onClick={() => updateFilingStatus(row.id, "filed")}
-                                        className="block w-full px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/5"
-                                      >
-                                        Mark as Filed
-                                      </button>
-                                    )}
                                   </RowActionMenu>
                                 </div>
                               </div>
@@ -1503,130 +2014,13 @@ export default function DashboardPage() {
                           </div>
                         </div>
                       )}
-
-                      {upcomingCount > 0 && (
-                        <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03]">
-                          <div className="flex flex-col gap-3 border-b border-white/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-                            <div>
-                              <div className="text-sm font-semibold text-white">Coming Up</div>
-                              <div className="mt-1 text-sm text-slate-400">
-                                Not urgent yet. These move into the queue as deadlines get closer.
-                              </div>
-                            </div>
-                            <Link
-                              href="/filings?status=UPCOMING"
-                              className="inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 transition hover:bg-white/10"
-                            >
-                              View all upcoming →
-                            </Link>
-                          </div>
-
-                          <div className="divide-y divide-white/5">
-                            {filings
-                              .filter((f) => f.bucket === "UPCOMING")
-                              .slice(0, 3)
-                              .map((row) => (
-                                <div
-                                  key={row.id}
-                                  className="group relative flex flex-col gap-4 px-5 py-4 transition-all duration-200 hover:bg-white/[0.04] lg:flex-row lg:items-center lg:justify-between"
-                                >
-                                  <div className="flex items-start gap-4">
-                                    <div className={`flex h-10 w-10 items-center justify-center rounded-xl text-sm font-semibold ${row.iconClass}`}>
-                                      {row.icon}
-                                    </div>
-
-                                    <div>
-                                      <div className="text-sm font-medium text-white sm:text-base">
-                                        {row.title} <span className="text-slate-400">— {row.company}</span>
-                                      </div>
-                                      <div className={`mt-1 text-sm ${row.subtitleClass}`}>{row.subtitle}</div>
-                                    </div>
-                                  </div>
-
-                                  <div className="flex items-center gap-2">
-                                    <Link
-                                      href="/filings"
-                                      className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200 transition-all duration-150 hover:scale-[1.02] hover:bg-white/10 active:scale-[0.98]"
-                                    >
-                                      View
-                                    </Link>
-                                    <button
-                                      type="button"
-                                      onClick={() => handlePrimaryAction(row)}
-                                      className={`rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150 hover:scale-[1.02] active:scale-[0.98] ${row.primaryClass}`}
-                                    >
-                                      {row.primaryAction}
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                          </div>
-                        </div>
-                      )}
                     </div>
-
-                    {filedFilings.length > 0 && (
-                      <div className="mt-10 overflow-visible rounded-3xl border border-white/10 bg-white/[0.02] opacity-80">
-                        <div className="border-b border-white/10 px-4 py-4 sm:px-5">
-                          <div className="text-sm font-semibold text-white">
-                            Completed ({Math.min(filedFilings.length, 5)})
-                          </div>
-                          <div className="mt-1 text-sm text-slate-400">Recently completed work</div>
-                        </div>
-
-                        <div className="overflow-visible">
-                          {filedFilings.slice(0, 5).map((row) => (
-                            <div
-                              key={row.id}
-                              className="relative flex flex-col gap-4 overflow-visible border-t border-white/5 px-4 py-4 sm:px-5 lg:flex-row lg:items-center lg:justify-between"
-                            >
-                              <div className="flex items-start gap-4">
-                                <div className={`flex h-10 w-10 items-center justify-center rounded-xl text-sm font-semibold ${row.iconClass}`}>
-                                  {row.icon}
-                                </div>
-
-                                <div>
-                                  <div className="text-sm font-medium text-white sm:text-base">
-                                    {row.title} <span className="text-slate-400">— {row.company}</span>
-                                  </div>
-                                  <div className={`mt-1 text-sm ${row.subtitleClass}`}>{row.subtitle}</div>
-                                </div>
-                              </div>
-
-                              <div className="flex flex-wrap items-center gap-2 overflow-visible">
-                                <button
-                                  type="button"
-                                  className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-300"
-                                >
-                                  Filed
-                                </button>
-
-                                <RowActionMenu
-                                  rowId={row.id}
-                                  openMenuId={openMenuId}
-                                  setOpenMenuId={setOpenMenuId}
-                                >
-                                  <button
-                                    type="button"
-                                    onClick={() => markUnfiled(row.id)}
-                                    className="block w-full px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-white/5"
-                                  >
-                                    Mark as Unfiled
-                                  </button>
-                                </RowActionMenu>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
       </main>
     </>
   );
@@ -1643,7 +2037,9 @@ function SmartInsightCard({
 }) {
   return (
     <div className="rounded-3xl border border-white/10 bg-white/[0.028] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</div>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+        {label}
+      </div>
       <div className="mt-2 text-lg font-semibold text-white">{value}</div>
       <div className="mt-1 text-sm leading-6 text-slate-400">{helper}</div>
     </div>
@@ -1677,28 +2073,24 @@ function BucketPill({ bucket }: { bucket: DashboardBucket }) {
   }[bucket];
 
   return (
-    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold tracking-[0.16em] ${styles}`}>
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold tracking-[0.16em] ${styles}`}
+    >
       {bucket}
     </span>
   );
 }
 
-function PriorityMiniStat({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
+function PriorityMiniStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-3">
-      <div className="text-[11px] font-semibold tracking-[0.16em] text-slate-500">{label}</div>
+      <div className="text-[11px] font-semibold tracking-[0.16em] text-slate-500">
+        {label}
+      </div>
       <div className="mt-1 text-sm font-medium text-white">{value}</div>
     </div>
   );
 }
-
-
 
 function getRiskMeta(bucket: DashboardBucket) {
   switch (bucket) {
@@ -1869,21 +2261,32 @@ function SidebarNavItem({
       {isActive && (
         <>
           <div className="absolute inset-y-1 left-0 w-[3px] rounded-full bg-cyan-300 shadow-[0_0_14px_rgba(34,211,238,0.65)]" />
-          {!collapsed && <div className="absolute inset-y-0 left-0 w-16 bg-[radial-gradient(circle_at_left,rgba(34,211,238,0.12),transparent_70%)]" />}
+          {!collapsed && (
+            <div className="absolute inset-y-0 left-0 w-16 bg-[radial-gradient(circle_at_left,rgba(34,211,238,0.12),transparent_70%)]" />
+          )}
         </>
       )}
 
-      <Icon size={18} className={isActive ? "text-cyan-200" : "text-slate-400 group-hover:text-slate-200"} />
+      <Icon
+        size={18}
+        className={
+          isActive
+            ? "text-cyan-200"
+            : "text-slate-400 group-hover:text-slate-200"
+        }
+      />
 
       {!collapsed && (
         <>
           <span className="flex-1 text-sm font-medium">{label}</span>
           {badge && (
-            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold tracking-[0.12em] ${
-              isActive
-                ? "border-cyan-300/20 bg-cyan-300/10 text-cyan-100"
-                : "border-white/10 bg-white/[0.04] text-slate-300"
-            }`}>
+            <span
+              className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold tracking-[0.12em] ${
+                isActive
+                  ? "border-cyan-300/20 bg-cyan-300/10 text-cyan-100"
+                  : "border-white/10 bg-white/[0.04] text-slate-300"
+              }`}
+            >
               {badge}
             </span>
           )}
@@ -1933,7 +2336,9 @@ function DropdownItem({
     <Link
       href={href}
       className={`flex items-center gap-3 px-4 py-3 text-sm transition ${
-        danger ? "text-red-300 hover:bg-red-500/10" : "text-slate-200 hover:bg-white/5"
+        danger
+          ? "text-red-300 hover:bg-red-500/10"
+          : "text-slate-200 hover:bg-white/5"
       }`}
     >
       <span className={danger ? "text-red-300" : "text-slate-400"}>{icon}</span>
@@ -1957,16 +2362,22 @@ function StatCard({
 }) {
   const accentMap = {
     red: "border-red-400/15 bg-[linear-gradient(180deg,rgba(127,29,29,0.16),rgba(69,10,10,0.05))] text-red-200",
-    yellow: "border-yellow-300/15 bg-[linear-gradient(180deg,rgba(202,138,4,0.14),rgba(120,53,15,0.05))] text-yellow-200",
-    green: "border-emerald-400/15 bg-[linear-gradient(180deg,rgba(6,78,59,0.14),rgba(4,47,46,0.05))] text-emerald-200",
+    yellow:
+      "border-yellow-300/15 bg-[linear-gradient(180deg,rgba(202,138,4,0.14),rgba(120,53,15,0.05))] text-yellow-200",
+    green:
+      "border-emerald-400/15 bg-[linear-gradient(180deg,rgba(6,78,59,0.14),rgba(4,47,46,0.05))] text-emerald-200",
     blue: "border-blue-400/15 bg-[linear-gradient(180deg,rgba(30,58,138,0.14),rgba(15,23,42,0.05))] text-blue-200",
   }[accent];
 
   return (
-    <div className={`h-full rounded-3xl border p-5 shadow-[0_10px_28px_rgba(0,0,0,0.1)] transition hover:-translate-y-[1px] hover:border-cyan-300/14 ${accentMap}`}>
+    <div
+      className={`h-full rounded-3xl border p-5 shadow-[0_10px_28px_rgba(0,0,0,0.1)] transition hover:-translate-y-[1px] hover:border-cyan-300/14 ${accentMap}`}
+    >
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-400">{label}</div>
+          <div className="text-[11px] font-semibold tracking-[0.18em] text-slate-400">
+            {label}
+          </div>
           <div className="mt-3 text-4xl font-semibold text-white">{value}</div>
           <div className="mt-2 text-sm text-slate-300">{sub}</div>
         </div>
