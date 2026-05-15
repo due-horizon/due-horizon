@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
-const PROTECTED_PATHS = ["/dashboard", "/filings", "/calendar", "/reports", "/onboarding"];
+const PROTECTED_PATHS = ["/dashboard", "/filings", "/calendar", "/reports", "/onboarding", "/settings"];
 const AUTH_PATHS = ["/login", "/signup"];
 const ONBOARDING_PATH = "/onboarding";
 const DASHBOARD_PATH = "/dashboard";

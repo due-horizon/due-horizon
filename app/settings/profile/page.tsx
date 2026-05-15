@@ -249,20 +249,30 @@ export default function ProfileSettingsPage() {
 
       let nextMessage = "Profile saved. Your name will now appear on Team Members and Filings assignees.";
 
-      if (cleaned.email.toLowerCase() !== (user.email || "").toLowerCase()) {
-        const { error: authEmailError } = await supabase.auth.updateUser({
-          email: cleaned.email,
-        });
+      const emailChanged =
+  cleaned.email.trim().toLowerCase() !==
+  (user.email || "").trim().toLowerCase();
 
-        if (authEmailError) {
-          throw new Error(
-            `Your profile was saved, but your sign-in email could not be updated: ${authEmailError.message}`
-          );
-        }
+if (emailChanged) {
+  const confirmed = window.confirm(
+    "Changing your login email may temporarily sign you out. Continue?"
+  );
 
-        nextMessage =
-          "Profile saved. Check your inbox to confirm your new email address if confirmation is required.";
-      }
+  if (confirmed) {
+    const { error: authEmailError } = await supabase.auth.updateUser({
+      email: cleaned.email,
+    });
+
+    if (authEmailError) {
+      throw new Error(
+        `Your profile was saved, but your sign-in email could not be updated: ${authEmailError.message}`
+      );
+    }
+
+    nextMessage =
+      "Profile saved. Check your inbox to confirm your new email address.";
+  }
+}
 
       setForm(cleaned);
       setInitialForm(cleaned);
