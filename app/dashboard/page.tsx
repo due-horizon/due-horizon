@@ -261,6 +261,7 @@ export default function DashboardPage() {
   const supabase = useMemo(() => createClient(), []);
   const profileRef = useRef<HTMLDivElement | null>(null);
   const alertsRef = useRef<HTMLDivElement | null>(null);
+  const lastGoodFilingsRef = useRef<Filing[]>([]);
 
   const [filings, setFilings] = useState<Filing[]>([]);
   const [workspaceSummary, setWorkspaceSummary] = useState<WorkspaceSummary>({
@@ -502,8 +503,11 @@ export default function DashboardPage() {
       buildDashboardFiling(filing, nameMap),
     );
 
+    if (mapped.length > 0) {
+      lastGoodFilingsRef.current = mapped;
+    }
+
     setFilings(mapped);
-    console.log("Dashboard mapped filings:", mapped);
     const resolvedWorkspaceType = normalizeWorkspaceType(
       (typeof firmBilling?.type === "string" && firmBilling.type) ||
         (typeof user.user_metadata?.pending_account_type === "string" &&
@@ -614,9 +618,12 @@ export default function DashboardPage() {
     setIsAlertsOpen(false);
   }
 
+  const visibleFilings = filings.length > 0 ? filings : lastGoodFilingsRef.current;
+  console.log("Dashboard rendered filings state:", filings.length, "visible:", visibleFilings.length);
+
   const alerts: { title: string; subtitle: string; tone: AlertTone }[] =
     useMemo(() => {
-      const activeFilings = filings.filter((f) => f.bucket !== "FILED");
+      const activeFilings = visibleFilings.filter((f) => f.bucket !== "FILED");
 
       const overdueAlerts = activeFilings
         .filter((f) => f.bucket === "OVERDUE")
@@ -643,19 +650,19 @@ export default function DashboardPage() {
         }));
 
       return [...overdueAlerts, ...dueSoonAlerts, ...readyAlerts].slice(0, 6);
-    }, [filings]);
+    }, [visibleFilings]);
 
-  const activeFilings = filings.filter((f) => f.bucket !== "FILED");
-  const filedFilings = filings.filter((f) => f.bucket === "FILED");
+  const activeFilings = visibleFilings.filter((f) => f.bucket !== "FILED");
+  const filedFilings = visibleFilings.filter((f) => f.bucket === "FILED");
 
-  const attentionCount = filings.filter(
+  const attentionCount = visibleFilings.filter(
     (f) => f.bucket === "OVERDUE" || f.bucket === "DUE SOON",
   ).length;
 
-  const dueSoonCount = filings.filter((f) => f.bucket === "DUE SOON").length;
-  const readyCount = filings.filter((f) => f.bucket === "READY TO FILE").length;
-  const upcomingCount = filings.filter((f) => f.bucket === "UPCOMING").length;
-  const overdueCount = filings.filter((f) => f.bucket === "OVERDUE").length;
+  const dueSoonCount = visibleFilings.filter((f) => f.bucket === "DUE SOON").length;
+  const readyCount = visibleFilings.filter((f) => f.bucket === "READY TO FILE").length;
+  const upcomingCount = visibleFilings.filter((f) => f.bucket === "UPCOMING").length;
+  const overdueCount = visibleFilings.filter((f) => f.bucket === "OVERDUE").length;
 
   const topPriority =
     activeFilings.find((f) => f.bucket === "OVERDUE") ??
@@ -664,7 +671,7 @@ export default function DashboardPage() {
     activeFilings.find((f) => f.bucket === "UPCOMING") ??
     null;
 
-  const nextUpcoming = filings.find((f) => f.bucket === "UPCOMING") ?? null;
+  const nextUpcoming = visibleFilings.find((f) => f.bucket === "UPCOMING") ?? null;
   const topPriorityRisk = topPriority ? getRiskMeta(topPriority.bucket) : null;
   const workspaceHealth = getWorkspaceHealthTone(attentionCount);
 
@@ -691,7 +698,7 @@ export default function DashboardPage() {
 
   const filingCoverageSummary: MissingCoverageSummary = useMemo(() => {
     const coveredEntities = new Set(
-      filings
+      visibleFilings
         .map((filing) => filing.company)
         .filter((company) => company && company !== "Workspace"),
     );
@@ -710,7 +717,7 @@ export default function DashboardPage() {
           ? `${entitiesWithoutFilings} ${entitiesWithoutFilings === 1 ? "entity appears" : "entities appear"} to be missing expected filings based on current setup.`
           : "Every tracked entity has visible filing coverage based on the current filing list.",
     };
-  }, [filings, workspaceSummary.entityCount]);
+  }, [visibleFilings, workspaceSummary.entityCount]);
 
   const smartInsights = [
     {
@@ -744,9 +751,9 @@ export default function DashboardPage() {
   ];
 
   const prioritizedActionItems = [
-    ...filings.filter((f) => f.bucket === "OVERDUE").slice(0, 3),
-    ...filings.filter((f) => f.bucket === "DUE SOON").slice(0, 3),
-    ...filings.filter((f) => f.bucket === "READY TO FILE").slice(0, 3),
+    ...visibleFilings.filter((f) => f.bucket === "OVERDUE").slice(0, 3),
+    ...visibleFilings.filter((f) => f.bucket === "DUE SOON").slice(0, 3),
+    ...visibleFilings.filter((f) => f.bucket === "READY TO FILE").slice(0, 3),
   ];
 
   const topCardStyle = topPriority ? getTopCardStyle(topPriority.bucket) : null;
@@ -1432,7 +1439,7 @@ export default function DashboardPage() {
                         </Link>
                       </div>
 
-                      {!loading && filings.length > 0 && (
+                      {!loading && visibleFilings.length > 0 && (
                         <div className="mt-8 grid gap-4 md:grid-cols-3">
                           {smartInsights.map((insight) => (
                             <SmartInsightCard
@@ -1445,7 +1452,7 @@ export default function DashboardPage() {
                         </div>
                       )}
 
-                      {!loading && filings.length > 0 && (
+                      {!loading && visibleFilings.length > 0 && (
                         <div className="mt-8 overflow-hidden rounded-[28px] border border-cyan-400/10 bg-[linear-gradient(135deg,rgba(34,211,238,0.045),rgba(15,23,42,0.12),rgba(255,255,255,0.012))] shadow-[0_18px_44px_rgba(2,6,23,0.16)]">
                           <div className="grid gap-6 p-6 lg:grid-cols-[minmax(0,1.35fr)_260px]">
                             <div>
@@ -1897,7 +1904,7 @@ export default function DashboardPage() {
                             </div>
 
                             <div className="divide-y divide-white/5">
-                              {filings
+                              {visibleFilings
                                 .filter((f) => f.bucket === "UPCOMING")
                                 .slice(0, 3)
                                 .map((row) => (
