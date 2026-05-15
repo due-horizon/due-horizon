@@ -766,6 +766,11 @@ export default function DashboardPage() {
       ? "/filings?setup=compliance&scope=clients"
       : "/filings?setup=compliance&scope=workspace";
 
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    window.location.href = "/login";
+  }
+
   return (
     <>
       <style jsx global>{`
@@ -1299,12 +1304,14 @@ export default function DashboardPage() {
                                   label="Help & Support"
                                   icon={<LifeBuoy size={15} />}
                                 />
-                                <DropdownItem
-                                  href="/logout"
-                                  label="Logout"
-                                  icon={<LogOut size={15} />}
-                                  danger
-                                />
+                                <button
+                                  type="button"
+                                  onClick={handleLogout}
+                                  className="flex w-full items-center gap-3 px-4 py-3 text-sm text-red-300 transition hover:bg-red-500/10"
+                                >
+                                  <LogOut size={15} />
+                                  Logout
+                                </button>
                               </div>
                             </div>
                           )}

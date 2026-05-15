@@ -39,7 +39,7 @@ export async function middleware(request: NextRequest) {
   const isProtected = startsWithPath(pathname, PROTECTED_PATHS);
   const isAuthPage = startsWithPath(pathname, AUTH_PATHS);
   const isOnboardingPage = startsWithPath(pathname, [ONBOARDING_PATH]);
-  const isDashboardArea = startsWithPath(pathname, ["/dashboard", "/filings", "/calendar", "/reports"]);
+  const isDashboardArea = startsWithPath(pathname, ["/dashboard", "/filings", "/calendar", "/reports", "/settings"]);
 
   if (isProtected && !user) {
     const url = request.nextUrl.clone();
@@ -185,6 +185,7 @@ export const config = {
     "/calendar/:path*",
     "/reports/:path*",
     "/onboarding/:path*",
+    "/settings/:path*",
     "/login",
     "/signup",
   ],
