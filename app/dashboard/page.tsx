@@ -503,6 +503,7 @@ export default function DashboardPage() {
     );
 
     setFilings(mapped);
+    console.log("Dashboard mapped filings:", mapped);
     const resolvedWorkspaceType = normalizeWorkspaceType(
       (typeof firmBilling?.type === "string" && firmBilling.type) ||
         (typeof user.user_metadata?.pending_account_type === "string" &&
