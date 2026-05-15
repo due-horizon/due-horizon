@@ -132,17 +132,31 @@ const ENTITY_TYPE_OPTIONS = [
 ] as const;
 
 const serviceLabels: Record<ServiceKey, string> = {
-  payroll: "Payroll",
-  sales_tax: "Sales tax",
-  annual_report: "Annual report",
-  w2_1099: "1099 / W-2",
+  payroll: "Payroll filings",
+  sales_tax: "Sales tax returns",
+  annual_report: "Annual reports",
+  w2_1099: "W-2 / 1099 reporting",
+};
+
+const serviceDescriptions: Record<ServiceKey, string> = {
+  payroll: "Form 941, Form 940, NYS-45, and recurring payroll deadlines.",
+  sales_tax: "Monthly, quarterly, or annual sales tax filing schedules.",
+  annual_report: "State annual or biennial report tracking.",
+  w2_1099: "Year-end employee and contractor reporting workflows.",
 };
 
 const taxReturnLabels: Record<TaxReturnKey, string> = {
-  f1040: "1040",
-  f1120: "1120",
-  f1120s: "1120S",
-  f1065: "1065",
+  f1040: "Individual / Sole proprietor",
+  f1120: "Corporation",
+  f1120s: "S Corporation",
+  f1065: "Partnership",
+};
+
+const taxReturnDescriptions: Record<TaxReturnKey, string> = {
+  f1040: "Form 1040",
+  f1120: "Form 1120",
+  f1120s: "Form 1120-S",
+  f1065: "Form 1065",
 };
 
 function defaultServices(): ClientServiceMap {
@@ -219,6 +233,32 @@ function getDefaultTaxReturnsForEntity(entityType: string): ClientTaxReturnMap {
 
 function hasSelectedTaxReturn(taxReturns: ClientTaxReturnMap) {
   return Object.values(taxReturns).some(Boolean);
+}
+
+function getSmartRecommendation(entityType: string) {
+  const normalized = entityType.trim().toLowerCase();
+
+  if (!normalized) {
+    return "Select an entity type and Due Horizon will suggest the most likely income tax return.";
+  }
+
+  if (normalized.includes("s corp")) {
+    return "Recommended for S Corps: Form 1120-S, annual report tracking, and payroll filings if wages are paid.";
+  }
+
+  if (normalized.includes("c corp")) {
+    return "Recommended for corporations: Form 1120, annual report tracking, and payroll filings if wages are paid.";
+  }
+
+  if (normalized.includes("partnership")) {
+    return "Recommended for partnerships: Form 1065 and state annual report tracking where required.";
+  }
+
+  if (normalized.includes("individual") || normalized.includes("single-member") || normalized === "llc") {
+    return "Recommended for individuals and single-member LLCs: Form 1040 with sales tax or payroll added only if needed.";
+  }
+
+  return "Due Horizon will generate filings based only on the services and returns you turn on.";
 }
 
 function toComplianceProfile(form: SetupForm): ComplianceProfile {
@@ -442,7 +482,8 @@ export default function OnboardingPage() {
     manualClientSelectionCount > 0;
 
   const businessSelectionCount =
-    Object.values(businessSetup.services).filter(Boolean).length;
+    Object.values(businessSetup.services).filter(Boolean).length +
+    Object.values(businessSetup.taxReturns).filter(Boolean).length;
   const canFinishBusinessSetup =
     businessSetup.name.trim().length > 0 &&
     businessSetup.state.trim().length === 2 &&
@@ -886,32 +927,32 @@ export default function OnboardingPage() {
 
   const heading =
     step === "loading"
-      ? "Building your compliance workspace"
+      ? "Building your compliance system"
       : step === 4
-        ? "Activate your workspace"
+        ? "Your compliance system is ready"
         : accountType === "business_owner"
           ? step === 2
-            ? "Let’s generate your first filings"
+            ? "Your filing schedule is ready to build"
             : "Choose who this workspace is for"
           : step === 1
             ? "Set up your firm"
             : step === 2
-              ? "Let’s generate your first filings"
+              ? "Your filing schedule is ready to build"
               : "Import clients from CSV";
 
   const subheading =
     step === "loading"
       ? "Creating the workspace, saving your setup, and generating only the filings you need."
       : step === 4
-        ? "Your compliance system is built and waiting. Start your free trial to unlock your dashboard and begin tracking deadlines."
+        ? "Your filings, workflows, and deadline tracking are generated. Start your free trial to unlock the dashboard."
         : accountType === "business_owner"
           ? step === 2
-            ? "Tell us about your business and we’ll build the first version of your compliance system."
+            ? "Enter the basics and Due Horizon will detect the first deadlines, workflows, and filing schedule for this business."
             : "We’ll tailor the setup based on whether this workspace is for your own business or for client work."
           : step === 1
-            ? "A fast setup so you can start with one real client, see real filings, and expand later."
+            ? "Start with one real client, see real filings immediately, and expand after the workspace is live."
             : step === 2
-              ? "Start with one client. You can import the rest after you see the workspace working."
+              ? "Start with one client so you can see the compliance engine working before importing everyone else."
               : "Upload your client list. You’ll review everything before anything is created.";
 
   return (
@@ -926,7 +967,11 @@ export default function OnboardingPage() {
             <div className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs uppercase tracking-[0.18em] text-slate-300 backdrop-blur-sm">
               {step === "loading"
                 ? "Building workspace"
-                : `Step ${currentStepDisplay} of ${totalSteps}`}
+                : step === 4
+                  ? "Workspace ready"
+                  : accountType
+                    ? "Smart setup"
+                    : `Step ${currentStepDisplay} of ${totalSteps}`}
             </div>
 
             {accountType && (
@@ -946,7 +991,7 @@ export default function OnboardingPage() {
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{heading}</h1>
           <p className="mt-3 text-slate-400">{subheading}</p>
           <p className="mt-3 text-sm text-slate-500">
-            Fast setup, real filings, and no accidental bulk creation.
+            Fast setup, smart recommendations, and real deadline previews before checkout.
           </p>
 
           {showGeneratingCue && step !== "loading" && (
@@ -976,7 +1021,7 @@ export default function OnboardingPage() {
                 {!accountType && step === 1 && (
                   <div className="grid gap-6 md:grid-cols-2">
                     <PathCard
-                      title="My business"
+                      title="I run a business"
                       subtitle="Set up one company fast and generate the filings you actually need."
                       points={[
                         "Single-entity setup in minutes",
@@ -987,7 +1032,7 @@ export default function OnboardingPage() {
                       onClick={() => setAccountType("business_owner")}
                     />
                     <PathCard
-                      title="My clients"
+                      title="I manage clients"
                       subtitle="Start with one real client now, then expand once the workspace is live."
                       points={[
                         "Best conversion path for firms",
@@ -1065,9 +1110,9 @@ export default function OnboardingPage() {
                   <SetupPanel
                     form={businessSetup}
                     setForm={setBusinessSetup}
-                    title="Generate your first filings"
+                    title="Build your filing schedule"
                     subtitle="Enter your business details and switch on only the filings you actually need. We’ll generate the first version of your compliance system instantly."
-                    buttonLabel={saving ? "Generating..." : "Build workspace"}
+                    buttonLabel={saving ? "Generating..." : "Generate my workspace"}
                     onBack={() => {
                       if (signupType) return;
                       setAccountType(null);
@@ -1113,9 +1158,9 @@ export default function OnboardingPage() {
                     <SetupPanel
                       form={manualClient}
                       setForm={setManualClient}
-                      title="Generate your first filings"
+                      title="Build your filing schedule"
                       subtitle="Tell us about one client so we can generate real deadlines and workflows now. You can import the rest after the workspace is live."
-                      buttonLabel={saving ? "Generating..." : "Build workspace"}
+                      buttonLabel={saving ? "Generating..." : "Generate my workspace"}
                       onBack={() => setStep(1)}
                       onSubmit={generateWorkspace}
                       disabled={!canFinishManualClient || saving}
@@ -1210,6 +1255,7 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                                   <ServiceToggle
                                     key={service}
                                     title={serviceLabels[service]}
+                                    subtitle={serviceDescriptions[service]}
                                     enabled={row.services[service]}
                                     compact
                                     onToggle={() =>
@@ -1240,6 +1286,7 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                                     <ServiceToggle
                                       key={taxReturn}
                                       title={taxReturnLabels[taxReturn]}
+                                      subtitle={taxReturnDescriptions[taxReturn]}
                                       enabled={row.taxReturns[taxReturn]}
                                       compact
                                       onToggle={() =>
@@ -1307,7 +1354,7 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                         onClick={generateWorkspace}
                         className="h-12 rounded-xl bg-blue-600 px-6 font-semibold transition hover:bg-blue-500 disabled:opacity-40"
                       >
-                        {saving ? "Generating..." : "Build workspace"}
+                        {saving ? "Generating..." : "Generate my workspace"}
                       </button>
                     </div>
                   </div>
@@ -1338,9 +1385,11 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                     </p>
 
                     <div className="mt-8 space-y-4">
-                      <LoadingRow label="Creating workspace" delay={0} />
-                      <LoadingRow label="Saving compliance setup" delay={0.2} />
-                      <LoadingRow label="Generating filings and workflows" delay={0.35} />
+                      <LoadingRow label="Creating secure workspace" delay={0} />
+                      <LoadingRow label="Configuring compliance engine" delay={0.18} />
+                      <LoadingRow label="Building filing calendar" delay={0.32} />
+                      <LoadingRow label="Preparing workflow automation" delay={0.46} />
+                      <LoadingRow label="Finalizing dashboard" delay={0.6} />
                     </div>
                   </div>
                 )}
@@ -1439,7 +1488,7 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                       </div>
                       <div className="grid gap-4 md:grid-cols-3">
                         <PreviewCard
-                          title="Activate your workspace"
+                          title="Your compliance system is ready"
                           subtitle="Start your free trial to unlock the dashboard and begin tracking deadlines."
                         />
                         <PreviewCard
@@ -1468,7 +1517,7 @@ Acme Inc,NY,S Corp,yes,no,no,no,yes,no,yes,no`}
                         </button>
 
                         <p className="text-center text-sm text-slate-500">
-                          No credit card required • Takes less than 60 seconds
+                          Secure checkout • Takes less than 60 seconds
                         </p>
                       </div>
                     </div>
@@ -1726,9 +1775,7 @@ function SetupPanel({
               setForm((current) => ({
                 ...current,
                 entityType: value,
-                taxReturns: isBusinessOwner
-                  ? current.taxReturns
-                  : getDefaultTaxReturnsForEntity(value),
+                taxReturns: getDefaultTaxReturnsForEntity(value),
               }))
             }
             options={ENTITY_TYPE_OPTIONS}
@@ -1736,13 +1783,26 @@ function SetupPanel({
         </div>
       </div>
 
+      <div className="rounded-2xl border border-cyan-400/15 bg-cyan-400/5 p-4">
+        <div className="flex items-start gap-3">
+          <Sparkles className="mt-0.5 h-4 w-4 text-cyan-300" />
+          <div>
+            <div className="text-sm font-semibold text-cyan-100">Smart recommendation</div>
+            <p className="mt-1 text-sm leading-6 text-slate-300">
+              {getSmartRecommendation(form.entityType)}
+            </p>
+          </div>
+        </div>
+      </div>
+
       <div>
-        <div className="mb-3 text-sm font-semibold text-white">Turn on the filings you need</div>
+        <div className="mb-3 text-sm font-semibold text-white">What does this business need help with?</div>
         <div className="grid gap-2 md:grid-cols-2">
           {(Object.keys(serviceLabels) as ServiceKey[]).map((service) => (
             <ServiceToggle
               key={service}
               title={serviceLabels[service]}
+              subtitle={serviceDescriptions[service]}
               enabled={form.services[service]}
               onToggle={() =>
                 setForm((current) => ({
@@ -1758,14 +1818,14 @@ function SetupPanel({
         </div>
       </div>
 
-      {!isBusinessOwner && (
-        <div>
-          <div className="mb-3 text-sm font-semibold text-white">Income tax returns</div>
+      <div>
+          <div className="mb-3 text-sm font-semibold text-white">Income tax return type</div>
           <div className="grid gap-2 md:grid-cols-4">
             {(Object.keys(taxReturnLabels) as TaxReturnKey[]).map((taxReturn) => (
               <ServiceToggle
                 key={taxReturn}
                 title={taxReturnLabels[taxReturn]}
+                subtitle={taxReturnDescriptions[taxReturn]}
                 enabled={form.taxReturns[taxReturn]}
                 onToggle={() =>
                   setForm((current) => ({
@@ -1780,7 +1840,6 @@ function SetupPanel({
             ))}
           </div>
         </div>
-      )}
 
       {form.services.sales_tax && (
         <SalesTaxFrequencySelector
@@ -1867,11 +1926,13 @@ function SalesTaxFrequencySelector({
 
 function ServiceToggle({
   title,
+  subtitle,
   enabled,
   onToggle,
   compact = false,
 }: {
   title: string;
+  subtitle?: string;
   enabled: boolean;
   onToggle: () => void;
   compact?: boolean;
@@ -1880,15 +1941,20 @@ function ServiceToggle({
     <button
       type="button"
       onClick={onToggle}
-      className={`flex items-center justify-between rounded-xl border px-4 py-3 text-left transition ${
+      className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition ${
         enabled
           ? "border-cyan-300/30 bg-cyan-400/10 text-cyan-100"
           : "border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]"
       } ${compact ? "text-sm" : ""}`}
     >
-      <span>{title}</span>
+      <span>
+        <span className="block font-medium">{title}</span>
+        {subtitle ? (
+          <span className="mt-1 block text-xs leading-5 text-slate-400">{subtitle}</span>
+        ) : null}
+      </span>
       <CheckCircle2
-        className={`h-4 w-4 ${enabled ? "opacity-100" : "opacity-30"}`}
+        className={`h-4 w-4 shrink-0 ${enabled ? "opacity-100" : "opacity-30"}`}
       />
     </button>
   );
